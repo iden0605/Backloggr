@@ -1,0 +1,63 @@
+# Plan
+
+_Last updated: 2026-07-02_
+
+## Current Phase
+
+Stage 4 (Dashboard analytics) complete — ready to move to Stage 5 (Cloudflare Worker + AI recommendations).
+
+## Goals
+
+- Build out backlog management (RAWG search, add/edit/status) end-to-end, with as little manual data entry as possible (auto-add on launch now; full Steam library import later)
+- Layer in auto playtime tracking, dashboard analytics, AI recommendations, and clipping
+- Ship a working Windows installer via CI/CD
+
+## Steps
+
+| # | Task | Status | Notes |
+|---|------|--------|-------|
+| 1 | Scaffold Tauri v2 + React + TS + Vite project | Done | |
+| 2 | Install frontend deps: tailwindcss v3, zustand, react-router-dom, lucide-react | Done | Pinned Tailwind to v3 (PostCSS), not v4 |
+| 3 | Add Rust crates to `Cargo.toml` | Done | tauri-plugin-sql, sysinfo, rusqlite, reqwest, tokio, chrono, etc. |
+| 4 | Implement `db.rs` schema init (games, sessions, clips, recommendations, settings) | Done | Verified via `get_backlog` command round-trip |
+| 5 | Build sidebar layout + React Router views | Done | HashRouter used (safe under Tauri asset protocol) |
+| 6 | Set up Zustand store skeleton | Done | `useAppStore.ts` |
+| 7 | Verify dev build end-to-end | Done | `cargo check`, `tsc --noEmit`, `npm run build`, and `npm run tauri dev` all pass; app launched without panics |
+| 8 | Implement RAWG search/backlog commands (`rawg.rs`, `commands.rs`) | Done | `search_rawg`, `add_game` (upsert), `update_game_status`, `delete_game`; RAWG key live and confirmed working |
+| 9 | Build Search and Backlog React views | Done | Search (query + add) and Backlog (list, status dropdown, remove) built and wired; user click-tested full flow, confirmed working |
+| 10 | Implement background process tracker (`tracker.rs`) + session commands | Done | `tracker.rs` polls `sysinfo` every 5s (tokio task spawned from `setup`), normalizes `.exe` suffix, opens/closes `sessions` rows, emits `session-started`/`session-ended` via `Emitter`. Added `set_game_exe_name` command + exe-name input in Backlog UI. Frontend listens for events in `App.tsx`, tracks `currentlyPlayingId` in Zustand. Click-tested live against real Steam/Dave the Diver process on Mac: session opened on launch, closed with correct `duration_seconds` on quit. Also verified DB survives an unclean `kill -9` of the app mid-session (WAL mode) — `PRAGMA integrity_check` returns `ok`, no data loss. No "currently playing" UI yet — deferred to Stage 4 (Dashboard). |
+| 11 | Build Dashboard analytics commands + charts (recharts) | Done | `get_dashboard_stats(period)` (status counts, period-scoped total playtime, per-game playtime with cover art, last-7-days chart) + `get_currently_playing`; Dashboard.tsx renders a live "Currently Playing" banner (ticking elapsed timer), stat cards, recharts trend chart, and a "Games Played" list with thumbnails filterable by Day/Week/Month/All-Time. Recent-sessions list was dropped — not useful to the user, replaced by the per-game breakdown. |
+| 11b | Tracker self-healing for unclean shutdowns | Done | `tracker::reconcile_dangling_sessions` runs at startup: re-adopts sessions for still-running games (preserving original `started_at`), or closes out dead ones using a new `last_seen_at` heartbeat column (flagged `ended_estimated`) instead of guessing 0 duration or inflating it to "now". Handles app crash, force-quit, and full OS restart/power-loss while a game was running. `get_currently_playing` reads live DB state on Dashboard mount instead of relying solely on events, avoiding a race with this reconciliation. |
+| 11c | Auto-add unregistered games to the backlog on launch | Done | `tracker::detect_unregistered_games` scans running processes each poll for ones whose install path sits under a known storefront/launcher folder (`steamapps/common`, Epic Games, GOG Games, Battle.net, Riot Games) and isn't yet linked to a backlog entry. `auto_register_and_track` runs the guessed name through `humanize_name` (splits camelCase/letter-digit boundaries, e.g. `"BloonsTD6"` → `"Bloons TD 6"` — fixed after user found Bloons TD 6 got added with no cover art because the raw Steam folder name didn't match RAWG's listing) before searching RAWG for cover art/genre/platform, preferring an exact name match over just the first result (falls back to the humanized name alone on no match/API failure), upserts the `games` row (status `playing`), and opens its first session immediately — no manual "add to backlog" step needed. Emits a new `game-auto-added` event; Backlog.tsx listens and live-refreshes with a dismissible "X was automatically added" notice. |
+| 11d | Fix `delete_game` foreign key constraint error | Done | `delete_game` only deleted the `games` row; with `foreign_keys = ON`, any game with `sessions`/`clips` rows referencing it (i.e. any game that had ever been tracked) failed to delete. Now wrapped in a transaction that deletes `sessions` and `clips` rows for that `game_id` first. User confirmed removing a previously-tracked game (Bloons TD 6) now works. |
+| 11e | Backlog v2 — remove status dropdown, auto status-on-play | Done | User feedback: a manual status dropdown per game wasn't useful. Tracker now sets `games.status = 'playing'` automatically on session start (unless `completed`/`dropped`). New `get_playtime_totals` command feeds inline per-game playtime. Backlog.tsx groups games into Playing/Backlog/Wishlist/Completed/Dropped sections (Playing sorted by most-played), with contextual action buttons (`Mark Completed`/`Drop`/`Start Playing`/`Move to Wishlist`/`Move to Backlog`/`Play Again`) replacing the dropdown entirely; live-refreshes on `session-started`/`session-ended` in addition to the existing `game-auto-added`. |
+| 12 | Deploy Cloudflare Worker proxy + implement `get_recommendation` command | Todo | Stage 5 |
+| 13 | Implement ffmpeg rolling buffer + clip save (`clipper.rs`) + hotkey | Todo | Stage 6 |
+| 14 | System tray, background mode, launch-on-startup | Todo | Stage 7 |
+| 15 | Settings screen + polish (empty states, onboarding, error boundaries) | Todo | Stage 8 |
+| 16 | GitHub Actions release workflow (`release.yml`) | Todo | Stage 9 |
+| 17 | Steam library connect (OAuth/API-key sign-in) to auto-import the full owned-games list | Todo | Stage 10 (future) — replaces/augments the path-heuristic auto-add from 11c with an authoritative source: Steam Web API `IPlayerService/GetOwnedGames` (needs a Steam API key + the user's SteamID, via either OpenID sign-in or a pasted profile URL/API key) to pull the *entire* owned library — including games never launched yet — rather than only ones detected running. Not started; deliberately deferred until core tracking/dashboard UX is solid. |
+
+## Completed
+
+- Full Stage 1 scaffold: Tauri v2 + React shell, SQLite schema init, sidebar navigation, Zustand store — build and dev-run verified clean.
+- Full Stage 2: RAWG search + backlog management (search, add, status change, remove) — user click-tested end-to-end.
+- Full Stage 3: background playtime tracker — session start/end via `sysinfo` polling, exe-name linking UI, live events to frontend. Click-tested against a real running game; DB confirmed crash-safe (WAL mode).
+- Full Stage 4: Dashboard analytics — `get_dashboard_stats` Rust command aggregates playtime/session data; Dashboard view shows stat cards, a recharts bar chart of the last 7 days' playtime, top-5 most-played games, and 10 most recent sessions. Verified via `cargo check`, `tsc --noEmit`, `npm run build`, and a live `npm run tauri dev` run (no panics, HMR round-tripped cleanly).
+- Dashboard v2 + tracker self-healing (user feedback after using Stage 4 build): removed the recent-sessions list in favor of a period-filterable (Day/Week/Month/All-Time) "Games Played" list with cover art; added a live "Currently Playing" banner with a real-time ticking elapsed timer (fixes: previously required a tab switch to see session start/end reflected); added `tracker::reconcile_dangling_sessions` + `last_seen_at` heartbeat so a crash, force-quit, or full PC restart while a game was running no longer produces a permanently-open phantom session or double-counted playtime. Verified via `cargo check` and `tsc --noEmit`; user testing live with Dave the Diver in progress.
+- Auto-add-to-backlog (user feedback: didn't want to manually add every owned game): tracker now detects games launched from Steam/Epic/GOG/Battle.net/Riot install paths that aren't already in the backlog, best-effort enriches via RAWG, and adds + starts tracking them with zero manual steps. Full Steam-account library import (sign-in based, covers never-launched games too) intentionally deferred to Stage 10 — see Steps table task 17.
+- Auto-add name matching + delete bug fixes (found via live testing with Bloons TD 6): RAWG search now humanizes storefront folder names before matching (fixed missing cover art); `delete_game` now cleans up dependent `sessions`/`clips` rows in a transaction (fixed a foreign key constraint error that blocked deleting any previously-tracked game). Both confirmed fixed by the user live.
+- Backlog v2 (user feedback: the status dropdown wasn't useful/discoverable): status now auto-updates to `playing` when the tracker detects a launch; Backlog UI reorganized into status-grouped sections with contextual action buttons and inline playtime instead of one flat list + dropdown per row. Verified via `cargo check` and `tsc --noEmit`; live user testing pending.
+
+## Blockers
+
+_(none currently)_
+
+## Open Questions
+
+- Cloudflare Worker/Ollama hosting not yet set up — needed before Stage 5 (AI recommendations). RAWG API key is now set (bundled as a const in `rawg.rs`).
+
+## Decisions
+
+- Marketing website will live in a **separate repo**, not this monorepo. This repo is app-only (+ future `proxy/` for the Cloudflare Worker). The site will pull the latest release info from the GitHub API rather than sharing code with this repo.
+- Development happens on macOS; the real target is Windows. Windows-only pieces (`gdigrab` capture, registry-based launch-on-startup, `.msi` build) can't be tested locally on Mac — they'll be validated via the GitHub Actions Windows runner and, eventually, manual testing on real Windows hardware.

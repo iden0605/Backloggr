@@ -1,0 +1,402 @@
+use crate::db::DbState;
+use crate::rawg;
+use serde::Serialize;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::time::Duration;
+use sysinfo::System;
+use tauri::{AppHandle, Emitter, Manager};
+
+const POLL_INTERVAL_SECS: u64 = 5;
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SessionStarted {
+    game_id: i64,
+    session_id: i64,
+    started_at: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SessionEnded {
+    game_id: i64,
+    session_id: i64,
+    duration_seconds: i64,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct GameAutoAdded {
+    game_id: i64,
+    name: String,
+}
+
+/// Strip a trailing `.exe` (case-insensitive) so Windows' suffixed process names
+/// compare equal to the extension-less names sysinfo reports on Mac.
+fn normalize_exe_name(name: &str) -> String {
+    let lower = name.to_lowercase();
+    lower.strip_suffix(".exe").unwrap_or(&lower).to_string()
+}
+
+fn running_exe_names(sys: &mut System) -> HashSet<String> {
+    sys.refresh_processes();
+    sys.processes()
+        .values()
+        .map(|p| normalize_exe_name(&p.name().to_string()))
+        .collect()
+}
+
+/// Directory names that mark "the next path component is a game's install folder" across the
+/// major PC storefronts/launchers. Matched case-insensitively against path components, not raw
+/// substrings, so we don't misfire on something like a user folder named "Origin Games Notes".
+const LIBRARY_MARKERS: &[&str] = &[
+    "common", // steamapps/common/<Game>
+    "epic games",
+    "gog games",
+    "battle.net",
+    "riot games",
+];
+
+/// Best-effort guess at a human-readable game name from its install path, e.g.
+/// `.../steamapps/common/Dave the Diver/DaveTheDiver.app` -> `"Dave the Diver"`. Only ever used
+/// to seed a RAWG search for a game we don't already know about — never trusted as final data.
+fn guess_game_name_from_path(path: &Path) -> Option<String> {
+    let components: Vec<String> = path
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .map(|s| s.to_string())
+        .collect();
+
+    for (i, component) in components.iter().enumerate() {
+        let lower = component.to_lowercase();
+        if LIBRARY_MARKERS.contains(&lower.as_str()) {
+            if let Some(next) = components.get(i + 1) {
+                return Some(next.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Turns a raw filesystem name into something RAWG's search can actually match, e.g.
+/// `"BloonsTD6"` -> `"Bloons TD 6"` (RAWG lists it as "Bloons TD 6" — searching the unsplit
+/// folder name returns nothing). Splits on lowercase→uppercase boundaries, acronym→word
+/// boundaries ("TDGame" -> "TD Game"), and letter↔digit boundaries; underscores/dashes/dots
+/// become spaces. Idempotent on names that already have spaces (e.g. "Dave the Diver").
+fn humanize_name(raw: &str) -> String {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut result = String::with_capacity(raw.len() + 4);
+
+    for (i, &c) in chars.iter().enumerate() {
+        if c == '_' || c == '-' || c == '.' {
+            if !result.is_empty() && !result.ends_with(' ') {
+                result.push(' ');
+            }
+            continue;
+        }
+
+        if i > 0 {
+            let prev = chars[i - 1];
+            let next = chars.get(i + 1).copied();
+            let boundary = (prev.is_lowercase() && c.is_uppercase())
+                || (prev.is_alphabetic() && c.is_numeric())
+                || (prev.is_numeric() && c.is_alphabetic())
+                || (prev.is_uppercase() && c.is_uppercase() && next.is_some_and(|n| n.is_lowercase()));
+            if boundary && !result.ends_with(' ') {
+                result.push(' ');
+            }
+        }
+        result.push(c);
+    }
+
+    result.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Scans currently running processes for games installed under a known storefront/launcher
+/// directory (Steam, Epic, GOG, Battle.net, Riot) that aren't already linked to a backlog entry.
+/// Returns `(raw_exe_name, guessed_display_name)` pairs, deduplicated by normalized exe name.
+fn detect_unregistered_games(
+    sys: &System,
+    tracked_exe_names: &HashSet<String>,
+) -> Vec<(String, String)> {
+    let mut seen = HashSet::new();
+    let mut found = Vec::new();
+
+    for process in sys.processes().values() {
+        let raw_name = process.name().to_string();
+        let normalized = normalize_exe_name(&raw_name);
+        if tracked_exe_names.contains(&normalized) || !seen.insert(normalized) {
+            continue;
+        }
+        if let Some(display_name) = process.exe().and_then(guess_game_name_from_path) {
+            found.push((raw_name, display_name));
+        }
+    }
+
+    found
+}
+
+/// Looks up `guessed_name` on RAWG (best-effort — a miss or API failure just means the game gets
+/// added with the guessed name and no cover art rather than blocking tracking), then creates or
+/// links a backlog entry for it and immediately opens its first session. Runs the network call
+/// *before* touching the DB so the connection mutex is never held across an `.await`.
+async fn auto_register_and_track(
+    app: &AppHandle,
+    active: &mut HashMap<i64, i64>,
+    exe_name: &str,
+    guessed_name: &str,
+) {
+    let search_query = humanize_name(guessed_name);
+    let display_fallback = if search_query.is_empty() {
+        guessed_name.to_string()
+    } else {
+        search_query.clone()
+    };
+
+    let rawg_match = rawg::search_games(&search_query).await.ok().and_then(|results| {
+        // RAWG's relevance ranking usually puts the right game first, but prefer an exact
+        // (case-insensitive) name match when one exists rather than trusting ordering blindly.
+        let exact = results
+            .iter()
+            .position(|r| r.name.eq_ignore_ascii_case(&search_query));
+        match exact {
+            Some(i) => results.into_iter().nth(i),
+            None => results.into_iter().next(),
+        }
+    });
+
+    let db = app.state::<DbState>();
+    let conn = match db.0.lock() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let game: Result<(i64, String), _> = match &rawg_match {
+        Some(m) => conn.query_row(
+            "INSERT INTO games (rawg_id, name, cover_url, genre, platform, status, exe_name)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'playing', ?6)
+             ON CONFLICT(rawg_id) DO UPDATE SET exe_name = excluded.exe_name, status = 'playing'
+             RETURNING id, name",
+            rusqlite::params![m.rawg_id, m.name, m.cover_url, m.genre, m.platform, exe_name],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        ),
+        None => conn.query_row(
+            "INSERT INTO games (name, status, exe_name) VALUES (?1, 'playing', ?2) RETURNING id, name",
+            rusqlite::params![display_fallback, exe_name],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        ),
+    };
+
+    let Ok((game_id, name)) = game else { return };
+
+    let _ = app.emit("game-auto-added", GameAutoAdded { game_id, name });
+
+    let session: Result<(i64, String), _> = conn.query_row(
+        "INSERT INTO sessions (game_id, started_at, last_seen_at, auto_tracked) VALUES (?1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1) RETURNING id, started_at",
+        [game_id],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+    );
+    if let Ok((session_id, started_at)) = session {
+        active.insert(game_id, session_id);
+        let _ = app.emit(
+            "session-started",
+            SessionStarted { game_id, session_id, started_at },
+        );
+    }
+}
+
+/// Resolves sessions left open (`ended_at IS NULL`) by a previous run that never shut down
+/// cleanly — app crash/force-quit, or the whole OS restarting/losing power while a game was
+/// running. Runs once at tracker startup, before the poll loop.
+///
+/// For each dangling session: if the game's process is still running right now, adopt it back
+/// into `active` so tracking resumes under the *original* `started_at` instead of splitting into
+/// a second session. Otherwise close it out using the last heartbeat (`last_seen_at`) as a
+/// best-effort end time — much closer to the truth than "0 duration" (using started_at) or
+/// "however long the machine was off/app was closed" (using now) — and flag it
+/// `ended_estimated` so consumers know the duration wasn't measured at a real exit event.
+///
+/// A game removed from the backlog while a session was still open has no `exe_name` to check
+/// (LEFT JOIN misses it), so it can never be "adopted" — it's always closed out immediately.
+fn reconcile_dangling_sessions(
+    app: &AppHandle,
+    conn: &rusqlite::Connection,
+    running: &HashSet<String>,
+    active: &mut HashMap<i64, i64>,
+) {
+    let dangling: Vec<(i64, i64, Option<String>)> = {
+        let mut stmt = match conn.prepare(
+            "SELECT s.id, s.game_id, g.exe_name
+             FROM sessions s LEFT JOIN games g ON g.id = s.game_id
+             WHERE s.ended_at IS NULL
+             ORDER BY s.game_id, s.started_at DESC",
+        ) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        });
+        match rows {
+            Ok(r) => r.filter_map(|x| x.ok()).collect(),
+            Err(_) => return,
+        }
+    };
+
+    // Only the most recent dangling row per game is eligible for adoption (rows are ordered
+    // newest-first per game above); any older ones — leftover from repeated crashes before a
+    // clean run ever happened — are stale and always get closed.
+    let mut seen_games: HashSet<i64> = HashSet::new();
+
+    for (session_id, game_id, exe_name) in dangling {
+        let is_first_for_game = seen_games.insert(game_id);
+        let is_running = is_first_for_game
+            && exe_name
+                .as_deref()
+                .map(|e| running.contains(&normalize_exe_name(e)))
+                .unwrap_or(false);
+
+        if is_running {
+            active.insert(game_id, session_id);
+            continue;
+        }
+
+        let duration: Result<i64, _> = conn.query_row(
+            "UPDATE sessions SET
+                ended_at = COALESCE(last_seen_at, started_at),
+                duration_seconds = CAST((julianday(COALESCE(last_seen_at, started_at)) - julianday(started_at)) * 86400 AS INTEGER),
+                ended_estimated = 1
+             WHERE id = ?1
+             RETURNING duration_seconds",
+            [session_id],
+            |row| row.get(0),
+        );
+        if let Ok(duration_seconds) = duration {
+            let _ = app.emit(
+                "session-ended",
+                SessionEnded { game_id, session_id, duration_seconds },
+            );
+        }
+    }
+}
+
+pub fn start(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut sys = System::new_all();
+        // game_id -> session_id for sessions this tracker is actively tracking (either opened
+        // by this run, or re-adopted from a dangling session at startup).
+        let mut active: HashMap<i64, i64> = HashMap::new();
+
+        {
+            let running = running_exe_names(&mut sys);
+            let db = app.state::<DbState>();
+            let conn = db.0.lock();
+            if let Ok(conn) = conn {
+                reconcile_dangling_sessions(&app, &conn, &running, &mut active);
+            }
+        }
+
+        loop {
+            tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_SECS)).await;
+            let running = running_exe_names(&mut sys);
+
+            let tracked_games: Vec<(i64, String)> = {
+                let db = app.state::<DbState>();
+                let conn = match db.0.lock() {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                let mut stmt = match conn
+                    .prepare("SELECT id, exe_name FROM games WHERE exe_name IS NOT NULL AND exe_name != ''")
+                {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                let rows = stmt.query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                });
+                match rows {
+                    Ok(r) => r.filter_map(|x| x.ok()).collect(),
+                    Err(_) => continue,
+                }
+            };
+
+            // Auto-discover games installed via a known storefront that were launched but never
+            // manually added — the network lookup happens before any DB lock is taken.
+            let tracked_exe_names: HashSet<String> = tracked_games
+                .iter()
+                .map(|(_, exe)| normalize_exe_name(exe))
+                .collect();
+            for (exe_name, guessed_name) in detect_unregistered_games(&sys, &tracked_exe_names) {
+                auto_register_and_track(&app, &mut active, &exe_name, &guessed_name).await;
+            }
+
+            let db = app.state::<DbState>();
+            let conn = match db.0.lock() {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            for (game_id, exe_name) in &tracked_games {
+                let is_running = running.contains(&normalize_exe_name(exe_name));
+                let already_tracking = active.contains_key(game_id);
+
+                if is_running && already_tracking {
+                    // Heartbeat: if this process dies without a clean shutdown, the next
+                    // startup's reconciliation pass closes the session here, not at started_at.
+                    if let Some(session_id) = active.get(game_id) {
+                        let _ = conn.execute(
+                            "UPDATE sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?1",
+                            [session_id],
+                        );
+                    }
+                } else if is_running && !already_tracking {
+                    // A game the user actually launched is "playing" almost by definition — flip
+                    // it out of Backlog/Wishlist automatically so the status field tracks reality
+                    // instead of requiring a manual dropdown update. `completed`/`dropped` are
+                    // deliberate user calls, so those are left alone (replaying a completed game
+                    // doesn't un-complete it).
+                    let _ = conn.execute(
+                        "UPDATE games SET status = 'playing' WHERE id = ?1 AND status NOT IN ('completed', 'dropped')",
+                        [game_id],
+                    );
+
+                    let result = conn.query_row(
+                        "INSERT INTO sessions (game_id, started_at, last_seen_at, auto_tracked) VALUES (?1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1) RETURNING id, started_at",
+                        [game_id],
+                        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                    );
+                    if let Ok((session_id, started_at)) = result {
+                        active.insert(*game_id, session_id);
+                        let _ = app.emit(
+                            "session-started",
+                            SessionStarted { game_id: *game_id, session_id, started_at },
+                        );
+                    }
+                } else if !is_running && already_tracking {
+                    if let Some(session_id) = active.remove(game_id) {
+                        let duration: Result<i64, _> = conn.query_row(
+                            "UPDATE sessions SET ended_at = CURRENT_TIMESTAMP,
+                                duration_seconds = CAST((julianday(CURRENT_TIMESTAMP) - julianday(started_at)) * 86400 AS INTEGER)
+                             WHERE id = ?1
+                             RETURNING duration_seconds",
+                            [session_id],
+                            |row| row.get(0),
+                        );
+                        if let Ok(duration_seconds) = duration {
+                            let _ = app.emit(
+                                "session-ended",
+                                SessionEnded { game_id: *game_id, session_id, duration_seconds },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
