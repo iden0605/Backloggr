@@ -32,7 +32,10 @@ pub fn run() {
             commands::set_game_exe_name,
             commands::get_dashboard_stats,
             commands::get_currently_playing,
-            commands::get_playtime_totals
+            commands::get_playtime_totals,
+            commands::get_game_details,
+            commands::chat_recommend,
+            commands::get_dashboard_recommendations
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

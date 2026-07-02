@@ -9,7 +9,6 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-
 type Period = "day" | "week" | "month" | "all";
 
 const PERIODS: { value: Period; label: string }[] = [

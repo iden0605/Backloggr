@@ -1,13 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-
-interface RawgGameResult {
-  rawgId: number;
-  name: string;
-  coverUrl: string | null;
-  genre: string | null;
-  platform: string | null;
-}
+import { GameCard, type RawgGameResult } from "../shared/GameCard";
 
 export function Search() {
   const [query, setQuery] = useState("");
@@ -72,22 +65,19 @@ export function Search() {
 
       <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
         {results.map((game) => (
-          <div key={game.rawgId} className="overflow-hidden rounded bg-neutral-800">
-            {game.coverUrl && (
-              <img src={game.coverUrl} alt={game.name} className="h-32 w-full object-cover" />
-            )}
-            <div className="p-2">
-              <p className="truncate font-medium">{game.name}</p>
-              {game.genre && <p className="truncate text-xs text-neutral-400">{game.genre}</p>}
+          <GameCard
+            key={game.rawgId}
+            game={game}
+            footer={
               <button
                 onClick={() => addToBacklog(game)}
                 disabled={addedIds.has(game.rawgId)}
-                className="mt-2 w-full rounded bg-neutral-700 px-2 py-1 text-sm hover:bg-neutral-600 disabled:opacity-50"
+                className="w-full rounded bg-neutral-700 px-2 py-1 text-sm hover:bg-neutral-600 disabled:opacity-50"
               >
                 {addedIds.has(game.rawgId) ? "Added" : "Add to Backlog"}
               </button>
-            </div>
-          </div>
+            }
+          />
         ))}
       </div>
     </div>
