@@ -1,6 +1,8 @@
 import { useState } from "react";
 import type { ReactNode, MouseEvent } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { ExternalLink, Loader2, X, Monitor, Apple, Smartphone, Gamepad2 } from "lucide-react";
 
 export interface RawgGameResult {
@@ -53,25 +55,27 @@ function splitList(value: string | null, limit?: number): string[] {
 }
 
 function metacriticClass(score: number): string {
-  if (score >= 75) return "bg-emerald-900 text-emerald-300";
-  if (score >= 50) return "bg-yellow-900 text-yellow-300";
-  return "bg-red-900 text-red-300";
+  if (score >= 75) return "bg-success/15 text-success";
+  if (score >= 50) return "bg-warning/15 text-warning";
+  return "bg-danger/15 text-danger";
 }
 
 interface GameCardProps {
   game: RawgGameResult;
+  /** Short per-game context line (e.g. the AI's "why this fits" note), shown under the genres. */
+  note?: string | null;
   footer?: ReactNode;
 }
 
 /** Compact card for grids (Search + Recommendations results); click anywhere to expand
  *  into a detail panel that lazily fetches richer RAWG metadata via `get_game_details`. */
-export function GameCard({ game, footer }: GameCardProps) {
+export function GameCard({ game, note, footer }: GameCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [detail, setDetail] = useState<RawgGameDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function open() {
+  async function openDetail() {
     setExpanded(true);
     if (detail || loading) return;
     setLoading(true);
@@ -90,37 +94,52 @@ export function GameCard({ game, footer }: GameCardProps) {
     e.stopPropagation();
   }
 
+  function openRawg(e: MouseEvent) {
+    e.stopPropagation();
+    e.preventDefault();
+    void openUrl(game.rawgUrl);
+  }
+
   const genres = splitList(game.genre, 2);
   const platforms = platformCategories(game.platform);
 
   return (
     <>
       <div
-        onClick={open}
-        className="flex h-full cursor-pointer flex-col overflow-hidden rounded bg-neutral-800 transition hover:ring-1 hover:ring-neutral-600"
+        onClick={openDetail}
+        className="group flex h-full cursor-pointer flex-col overflow-hidden rounded-xl border border-border bg-surface transition-all duration-200 hover:-translate-y-0.5 hover:border-accent/40 hover:shadow-[0_16px_32px_-16px_rgba(0,0,0,0.6)]"
       >
-        {game.coverUrl && (
-          <img src={game.coverUrl} alt={game.name} className="h-32 w-full shrink-0 object-cover" />
+        {game.coverUrl ? (
+          <div className="relative h-32 w-full shrink-0 overflow-hidden">
+            <img
+              src={game.coverUrl}
+              alt={game.name}
+              className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.04]"
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-surface/70 via-transparent to-transparent" />
+          </div>
+        ) : (
+          <div className="h-32 w-full shrink-0 bg-gradient-to-br from-surface-alt to-surface" />
         )}
-        <div className="flex flex-1 flex-col p-2">
+        <div className="flex flex-1 flex-col p-3">
           <div className="flex items-start justify-between gap-1">
-            <p className="truncate font-medium">{game.name}</p>
-            <a
-              href={game.rawgUrl}
-              target="_blank"
-              rel="noreferrer"
-              onClick={stop}
+            <p className="truncate text-[13.5px] font-semibold text-text-hi">{game.name}</p>
+            <button
+              onClick={openRawg}
               title="View on RAWG"
-              className="shrink-0 text-neutral-500 hover:text-neutral-300"
+              className="shrink-0 text-text-lo/70 transition-colors hover:text-accent"
             >
               <ExternalLink className="h-3.5 w-3.5" />
-            </a>
+            </button>
           </div>
 
           {genres.length > 0 && (
-            <div className="mt-1 flex flex-wrap gap-1">
+            <div className="mt-1.5 flex flex-wrap gap-1">
               {genres.map((g) => (
-                <span key={g} className="rounded bg-neutral-700 px-1.5 py-0.5 text-xs text-neutral-300">
+                <span
+                  key={g}
+                  className="rounded-full bg-surface-alt px-2 py-0.5 text-[10.5px] font-medium text-text-lo"
+                >
                   {g}
                 </span>
               ))}
@@ -128,7 +147,7 @@ export function GameCard({ game, footer }: GameCardProps) {
           )}
 
           {platforms.length > 0 && (
-            <div className="mt-1.5 flex gap-1.5 text-neutral-500">
+            <div className="mt-2 flex gap-1.5 text-text-lo/70">
               {platforms.map((cat) => {
                 const { icon: Icon, label } = PLATFORM_CATEGORY_META[cat];
                 return <Icon key={cat} className="h-3.5 w-3.5" aria-label={label} />;
@@ -136,60 +155,74 @@ export function GameCard({ game, footer }: GameCardProps) {
             </div>
           )}
 
+          {note && (
+            <p className="mt-2 text-[11.5px] italic leading-snug text-text-lo">{note}</p>
+          )}
+
           {footer && (
-            <div onClick={stop} className="mt-auto pt-2">
+            <div onClick={stop} className="mt-auto pt-3">
               {footer}
             </div>
           )}
         </div>
       </div>
 
-      {expanded && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-          onClick={() => setExpanded(false)}
-        >
+      {expanded &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 p-4 backdrop-blur-sm animate-fade-in"
+            onClick={() => setExpanded(false)}
+          >
           <div
             onClick={stop}
-            className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-lg border border-neutral-800 bg-neutral-900 p-5"
+            className="max-h-[85vh] w-full max-w-lg animate-fade-up overflow-y-auto rounded-2xl border border-border bg-surface p-6 shadow-2xl"
           >
             <div className="flex items-start justify-between gap-3">
-              <h2 className="text-lg font-semibold">{game.name}</h2>
+              <h2 className="font-display text-xl font-medium text-text-hi">{game.name}</h2>
               <button
                 onClick={() => setExpanded(false)}
-                className="shrink-0 text-neutral-500 hover:text-neutral-300"
+                className="shrink-0 rounded-full p-1 text-text-lo transition-colors hover:bg-surface-alt hover:text-text-hi"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
 
             {game.coverUrl && (
-              <img src={game.coverUrl} alt={game.name} className="mt-3 h-40 w-full rounded object-cover" />
+              <img
+                src={game.coverUrl}
+                alt={game.name}
+                className="mt-4 h-40 w-full rounded-xl object-cover"
+              />
             )}
 
             {loading && (
-              <div className="mt-4 flex items-center gap-2 text-neutral-400">
+              <div className="mt-5 flex items-center gap-2 text-sm text-text-lo">
                 <Loader2 className="h-4 w-4 animate-spin" /> Loading details...
               </div>
             )}
-            {error && <p className="mt-4 text-sm text-red-400">{error}</p>}
+            {error && <p className="mt-4 text-sm text-danger">{error}</p>}
 
             {detail && (
-              <div className="mt-4 space-y-3">
+              <div className="mt-5 space-y-4">
                 <div className="flex flex-wrap items-center gap-2 text-xs">
                   {detail.metacriticScore != null && (
-                    <span className={`rounded px-1.5 py-0.5 font-semibold ${metacriticClass(detail.metacriticScore)}`}>
+                    <span
+                      className={`rounded-full px-2 py-0.5 font-semibold ${metacriticClass(detail.metacriticScore)}`}
+                    >
                       Metacritic {detail.metacriticScore}
                     </span>
                   )}
                   {splitList(detail.genre).map((g) => (
-                    <span key={g} className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">
+                    <span
+                      key={g}
+                      className="rounded-full bg-surface-alt px-2 py-0.5 font-medium text-text-lo"
+                    >
                       {g}
                     </span>
                   ))}
                 </div>
 
-                <div className="flex flex-wrap items-center gap-3 text-xs text-neutral-400">
+                <div className="flex flex-wrap items-center gap-3 text-xs text-text-lo">
                   {platformCategories(detail.platform).map((cat) => {
                     const { icon: Icon, label } = PLATFORM_CATEGORY_META[cat];
                     return (
@@ -201,43 +234,46 @@ export function GameCard({ game, footer }: GameCardProps) {
                 </div>
 
                 {detail.description && (
-                  <p className="max-h-40 overflow-y-auto text-sm leading-relaxed text-neutral-300">
+                  <p className="max-h-40 overflow-y-auto text-sm leading-relaxed text-text-lo">
                     {detail.description}
                   </p>
                 )}
 
                 {(detail.developer || detail.publisher) && (
-                  <div className="grid grid-cols-2 gap-2 text-sm">
+                  <div className="grid grid-cols-2 gap-3 rounded-xl bg-surface-alt/60 p-3 text-sm">
                     {detail.developer && (
                       <div>
-                        <p className="text-xs text-neutral-500">Developer</p>
-                        <p className="text-neutral-300">{detail.developer}</p>
+                        <p className="text-[11px] uppercase tracking-wide text-text-lo/70">
+                          Developer
+                        </p>
+                        <p className="mt-0.5 text-text-hi">{detail.developer}</p>
                       </div>
                     )}
                     {detail.publisher && (
                       <div>
-                        <p className="text-xs text-neutral-500">Publisher</p>
-                        <p className="text-neutral-300">{detail.publisher}</p>
+                        <p className="text-[11px] uppercase tracking-wide text-text-lo/70">
+                          Publisher
+                        </p>
+                        <p className="mt-0.5 text-text-hi">{detail.publisher}</p>
                       </div>
                     )}
                   </div>
                 )}
 
-                <a
-                  href={game.rawgUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 text-sm text-emerald-400 hover:text-emerald-300"
+                <button
+                  onClick={openRawg}
+                  className="inline-flex items-center gap-1.5 text-sm font-medium text-accent transition-colors hover:text-accent-hover"
                 >
                   View on RAWG <ExternalLink className="h-3.5 w-3.5" />
-                </a>
+                </button>
               </div>
             )}
 
-            {footer && <div className="mt-4">{footer}</div>}
+            {footer && <div className="mt-5">{footer}</div>}
           </div>
-        </div>
-      )}
+        </div>,
+          document.body,
+        )}
     </>
   );
 }

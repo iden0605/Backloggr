@@ -2,9 +2,19 @@
 // per-game detail lookup (description/Metacritic/developer/publisher) for the expand UI.
 
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
 const RAWG_API_KEY: &str = "a7786494c20247e79a871ac14e016552";
 const RAWG_BASE_URL: &str = "https://api.rawg.io/api";
+
+/// Shared HTTP client — reqwest clients hold a connection pool, so constructing one per request
+/// (the previous pattern) threw away keep-alive connections between the sequential lookups in
+/// `resolve_titles_with_reasons` and every other call. Also used by `commands.rs` for worker
+/// requests.
+pub(crate) fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
 
 #[derive(Deserialize)]
 struct RawgSearchResponse {
@@ -106,10 +116,9 @@ fn join_platforms(platforms: Option<Vec<RawgPlatformEntry>>) -> Option<String> {
 }
 
 pub async fn search_games(query: &str) -> Result<Vec<RawgGameResult>, String> {
-    let client = reqwest::Client::new();
     let url = format!("{RAWG_BASE_URL}/games");
 
-    let response = client
+    let response = http_client()
         .get(&url)
         .query(&[("key", RAWG_API_KEY), ("search", query), ("page_size", "20")])
         .send()
@@ -141,10 +150,9 @@ pub async fn search_games(query: &str) -> Result<Vec<RawgGameResult>, String> {
 /// Best single match for a specific title, used to resolve a game name the AI named (as opposed
 /// to `search_games`'s broader keyword search used for the user-facing Search page).
 async fn search_best_match(title: &str) -> Option<RawgGameResult> {
-    let client = reqwest::Client::new();
     let url = format!("{RAWG_BASE_URL}/games");
 
-    let response = client
+    let response = http_client()
         .get(&url)
         .query(&[("key", RAWG_API_KEY), ("search", title), ("page_size", "1")])
         .send()
@@ -173,16 +181,43 @@ async fn search_best_match(title: &str) -> Option<RawgGameResult> {
 /// recommendations get real variety instead of RAWG's keyword search surfacing a wall of
 /// same-title reskins for a single generic query.
 pub async fn resolve_titles(titles: &[String], max: usize) -> Vec<RawgGameResult> {
+    let pairs: Vec<(String, Option<String>)> =
+        titles.iter().map(|t| (t.clone(), None)).collect();
+    resolve_titles_with_reasons(&pairs, max)
+        .await
+        .into_iter()
+        .map(|(game, _)| game)
+        .collect()
+}
+
+/// Same as `resolve_titles`, but keeps each title's AI-written "why this fits" note paired with
+/// its resolved RAWG result, so chat results can show a per-game reason on the card.
+///
+/// Lookups run concurrently (they used to run one-by-one, adding several seconds of serial
+/// round-trips to every result set), but results are collected in the AI's original order so
+/// its best suggestions still win the dedup/cap.
+pub async fn resolve_titles_with_reasons(
+    titles: &[(String, Option<String>)],
+    max: usize,
+) -> Vec<(RawgGameResult, Option<String>)> {
+    let handles: Vec<_> = titles
+        .iter()
+        .cloned()
+        .map(|(title, reason)| {
+            tauri::async_runtime::spawn(async move { (search_best_match(&title).await, reason) })
+        })
+        .collect();
+
     let mut seen = std::collections::HashSet::new();
     let mut games = Vec::new();
 
-    for title in titles {
+    for handle in handles {
         if games.len() >= max {
             break;
         }
-        if let Some(game) = search_best_match(title).await {
+        if let Ok((Some(game), reason)) = handle.await {
             if seen.insert(game.rawg_id) {
-                games.push(game);
+                games.push((game, reason));
             }
         }
     }
@@ -191,10 +226,9 @@ pub async fn resolve_titles(titles: &[String], max: usize) -> Vec<RawgGameResult
 }
 
 pub async fn get_game_details(rawg_id: i64) -> Result<RawgGameDetail, String> {
-    let client = reqwest::Client::new();
     let url = format!("{RAWG_BASE_URL}/games/{rawg_id}");
 
-    let response = client
+    let response = http_client()
         .get(&url)
         .query(&[("key", RAWG_API_KEY)])
         .send()

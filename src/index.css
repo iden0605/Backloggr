@@ -1,3 +1,64 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  html {
+    background-color: theme("colors.bg");
+  }
+
+  body {
+    @apply text-text-hi;
+    font-family: theme("fontFamily.sans");
+    background-color: theme("colors.bg");
+    background-image:
+      radial-gradient(900px 480px at 15% -10%, rgba(45, 212, 191, 0.05), transparent 60%),
+      radial-gradient(700px 420px at 100% 0%, rgba(45, 212, 191, 0.035), transparent 55%);
+    background-attachment: fixed;
+  }
+
+  ::selection {
+    background: theme("colors.accent.DEFAULT");
+    color: theme("colors.bg");
+  }
+
+  /* Thin, low-contrast scrollbar that matches the palette instead of the OS default. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: theme("colors.border") transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: theme("colors.border");
+    border-radius: 999px;
+    border: 2px solid theme("colors.bg");
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: theme("colors.text-lo");
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: theme("fontFamily.display");
+  }
+  .font-mono {
+    font-family: theme("fontFamily.mono");
+  }
+
+  /* Shared page-title treatment: upright (no italic — flagged as illegible/odd), semibold
+     display serif, tight tracking. Used by every top-level page instead of ad-hoc h1 classes. */
+  .page-title {
+    font-family: theme("fontFamily.display");
+    font-weight: 600;
+    font-style: normal;
+    letter-spacing: -0.01em;
+    color: theme("colors.text-hi");
+  }
+}

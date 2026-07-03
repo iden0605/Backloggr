@@ -186,14 +186,16 @@ pub struct DashboardStats {
     pub playtime_last_7_days: Vec<DailyPlaytime>,
 }
 
-/// Maps a period selector to a SQL date-filter clause on `s.started_at`. `day` and `week` are
-/// rolling windows (last 24h / last 7 days), not calendar-aligned, to match "how much have I
-/// played recently" rather than "since Monday".
+/// Maps a period selector to a SQL date-filter clause on `s.started_at`. Buckets are calendar
+/// days in the user's LOCAL timezone (`'localtime'` uses the OS tz): `day` = today, `week`/
+/// `month` = today plus the previous 6/29 days. Timestamps are stored as UTC — without the
+/// `'localtime'` conversion, an evening session east of UTC lands on the wrong local day (e.g. a
+/// 9am AEST session is 11pm UTC the previous day, which used to count toward yesterday).
 fn period_filter(period: &str) -> Result<&'static str, String> {
     match period {
-        "day" => Ok("date(s.started_at) = date('now')"),
-        "week" => Ok("date(s.started_at) >= date('now', '-6 days')"),
-        "month" => Ok("date(s.started_at) >= date('now', '-29 days')"),
+        "day" => Ok("date(s.started_at, 'localtime') = date('now', 'localtime')"),
+        "week" => Ok("date(s.started_at, 'localtime') >= date('now', 'localtime', '-6 days')"),
+        "month" => Ok("date(s.started_at, 'localtime') >= date('now', 'localtime', '-29 days')"),
         "all" => Ok("1 = 1"),
         other => Err(format!("invalid period: {other}")),
     }
@@ -264,11 +266,13 @@ pub fn get_dashboard_stats(db: State<DbState>, period: String) -> Result<Dashboa
     };
 
     let playtime_last_7_days = {
+        // Same 'localtime' bucketing as period_filter — chart days must be the user's days.
         let mut stmt = conn
             .prepare(
-                "SELECT date(started_at) AS d, SUM(duration_seconds)
+                "SELECT date(started_at, 'localtime') AS d, SUM(duration_seconds)
                  FROM sessions
-                 WHERE duration_seconds IS NOT NULL AND date(started_at) >= date('now', '-6 days')
+                 WHERE duration_seconds IS NOT NULL
+                   AND date(started_at, 'localtime') >= date('now', 'localtime', '-6 days')
                  GROUP BY d ORDER BY d ASC",
             )
             .map_err(|e| e.to_string())?;
@@ -283,7 +287,7 @@ pub fn get_dashboard_stats(db: State<DbState>, period: String) -> Result<Dashboa
             .map(|offset| {
                 let date: String = conn
                     .query_row(
-                        "SELECT date('now', ?1)",
+                        "SELECT date('now', 'localtime', ?1)",
                         [format!("-{offset} days")],
                         |row| row.get(0),
                     )
@@ -355,6 +359,17 @@ pub struct ChatMessage {
     pub content: String,
 }
 
+/// A resolved RAWG game plus the AI's short per-game "why this fits" note (chat results only —
+/// dashboard suggestions carry no per-game reason). `Deserialize` + `default` on `reason` keep
+/// the dashboard cache backward-compatible: rows written before this field existed still load.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RecommendedGame {
+    #[serde(flatten)]
+    pub game: RawgGameResult,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ChatRecommendResponse {
@@ -363,52 +378,89 @@ pub enum ChatRecommendResponse {
         question: String,
         options: Option<Vec<String>>,
         multi_select: bool,
+        // Real size of the AI's current candidate pool (None when unknown, e.g. fallbacks) —
+        // shown in the UI as honest narrowing progress, never a fabricated number.
+        candidate_count: Option<u32>,
     },
     #[serde(rename = "results")]
     Results {
         reasoning: String,
-        games: Vec<RawgGameResult>,
+        games: Vec<RecommendedGame>,
     },
 }
 
-/// The worker replies with one of two shapes (see `proxy/src/index.ts`'s `CHAT_SYSTEM_PROMPT`);
-/// this mirrors that contract so `chat_recommend` can match on it directly instead of
-/// hand-parsing. `titles` are specific game names the model knows of — resolved individually via
-/// `rawg::resolve_titles` rather than a single keyword search, for real result variety. `options`
-/// lets a clarifying question offer quick-pick choices (e.g. singleplayer/multiplayer) instead of
-/// requiring free text every time.
+#[derive(Deserialize)]
+struct WorkerTitle {
+    title: String,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// The worker replies with one of two shapes (see `proxy/src/index.ts`'s `handleChat`); this
+/// mirrors that contract so `chat_recommend` can match on it directly instead of hand-parsing.
+/// `titles` are specific game names the model knows of (each with a short per-game fit note) —
+/// resolved individually via `rawg::resolve_titles_with_reasons` rather than a single keyword
+/// search, for real result variety. `options` lets a clarifying question offer quick-pick
+/// choices instead of requiring free text every time; `candidate_count` is the actual size of
+/// the model's remaining candidate pool while narrowing.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum WorkerReply {
+    Search {
+        titles: Vec<WorkerTitle>,
+        reasoning: String,
+    },
     Clarify {
         question: String,
         #[serde(default)]
         options: Option<Vec<String>>,
         #[serde(default, rename = "multiSelect")]
         multi_select: bool,
+        #[serde(default, rename = "candidateCount")]
+        candidate_count: Option<u32>,
     },
-    Search { titles: Vec<String>, reasoning: String },
 }
 
 const MAX_RECOMMENDATIONS: usize = 8;
 
-/// Forwards the chat turn to the bundled Worker URL, and — only when the model decides it has
-/// enough to go on — resolves its named titles against RAWG itself, so the RAWG API key never
-/// has to leave this binary. `awaiting_answer` tells the worker whether this message answers a
-/// clarifying question it just asked (search now) or starts a new ask (clarify first) — the
-/// frontend knows this directly from what it just displayed, rather than the worker having to
-/// infer it from history shape.
+/// Fetches every game name in the library (any status, including dropped — re-recommending a
+/// game the player abandoned reads just as fake as one they own) for the worker's exclusion
+/// list. Collected into an owned Vec so the mutex guard drops before any `.await`.
+fn owned_game_names(db: &DbState) -> Result<Vec<String>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT name FROM games")
+        .map_err(|e| e.to_string())?;
+    let names = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(names)
+}
+
+/// Forwards the chat turn to the bundled Worker URL, and — whenever the worker's code-side
+/// narrowing rule decides the candidate pool is focused enough — resolves the named titles
+/// against RAWG itself, so the RAWG API key never has to leave this binary. `questions_asked`
+/// counts clarifying rounds for the current ask (the worker caps the loop); the player's own
+/// library is sent as an exclusion list so nothing they already have comes back.
 #[tauri::command]
 pub async fn chat_recommend(
     db: State<'_, DbState>,
     message: String,
     history: Vec<ChatMessage>,
-    awaiting_answer: bool,
+    questions_asked: u32,
 ) -> Result<ChatRecommendResponse, String> {
-    let client = reqwest::Client::new();
-    let response = client
+    let excluded = owned_game_names(&db)?;
+
+    let response = rawg::http_client()
         .post(format!("{WORKER_URL}/chat"))
-        .json(&serde_json::json!({ "message": message, "history": history, "awaitingAnswer": awaiting_answer }))
+        .json(&serde_json::json!({
+            "message": message,
+            "history": history,
+            "questionsAsked": questions_asked,
+            "excluded": excluded,
+        }))
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -427,13 +479,21 @@ pub async fn chat_recommend(
             question,
             options,
             multi_select,
+            candidate_count,
         } => ChatRecommendResponse::Clarify {
             question,
             options,
             multi_select,
+            candidate_count,
         },
         WorkerReply::Search { titles, reasoning } => {
-            let games = rawg::resolve_titles(&titles, MAX_RECOMMENDATIONS).await;
+            let pairs: Vec<(String, Option<String>)> =
+                titles.into_iter().map(|t| (t.title, t.reason)).collect();
+            let games = rawg::resolve_titles_with_reasons(&pairs, MAX_RECOMMENDATIONS)
+                .await
+                .into_iter()
+                .map(|(game, reason)| RecommendedGame { game, reason })
+                .collect();
             ChatRecommendResponse::Results { reasoning, games }
         }
     };
@@ -599,7 +659,7 @@ pub async fn get_dashboard_recommendations(
 
     if !should_regenerate {
         if let Some(c) = cached {
-            let games: Vec<RawgGameResult> = serde_json::from_str(&c.games_json).unwrap_or_default();
+            let games: Vec<RecommendedGame> = serde_json::from_str(&c.games_json).unwrap_or_default();
             return Ok(ChatRecommendResponse::Results {
                 reasoning: c.reasoning,
                 games,
@@ -612,11 +672,11 @@ pub async fn get_dashboard_recommendations(
         .iter()
         .map(|(name, genre)| serde_json::json!({ "name": name, "genre": genre }))
         .collect();
+    let excluded = owned_game_names(&db)?;
 
-    let client = reqwest::Client::new();
-    let response = client
+    let response = rawg::http_client()
         .post(format!("{WORKER_URL}/suggest"))
-        .json(&serde_json::json!({ "games": favorites_json }))
+        .json(&serde_json::json!({ "games": favorites_json, "excluded": excluded }))
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -635,7 +695,11 @@ pub async fn get_dashboard_recommendations(
     }
 
     let reply: SuggestReply = response.json().await.map_err(|e| e.to_string())?;
-    let games = rawg::resolve_titles(&reply.titles, MAX_RECOMMENDATIONS).await;
+    let games: Vec<RecommendedGame> = rawg::resolve_titles(&reply.titles, MAX_RECOMMENDATIONS)
+        .await
+        .into_iter()
+        .map(|game| RecommendedGame { game, reason: None })
+        .collect();
 
     if let Ok(conn) = db.0.lock() {
         let games_json = serde_json::to_string(&games).unwrap_or_default();

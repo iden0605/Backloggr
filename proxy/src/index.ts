@@ -18,12 +18,15 @@ interface ChatMessage {
 interface ChatRequestBody {
 	message: string;
 	history: ChatMessage[];
-	// Set by the frontend, not inferred from history — it already knows whether this message is
-	// answering a clarifying question it just displayed, or the user starting a new ask (which
-	// happens right after a results turn, or turn one). Explicit beats inferred: history keeps
-	// accumulating across the whole conversation (so later rounds have full context to deepen
-	// the search), which would otherwise make "is this fresh" ambiguous to guess from length.
-	awaitingAnswer: boolean;
+	// How many clarifying questions have already been asked for the CURRENT ask (resets to 0 on
+	// a fresh ask, increments each time another clarifying question is shown). Once the cap is
+	// hit, `handleChat` returns results from whatever candidates came back instead of asking
+	// again — the conversation can never clarify forever.
+	questionsAsked: number;
+	// Names of games already in the player's library (any status). Recommending a game someone
+	// already owns/played instantly reads as fake — the prompt forbids them and `handleChat`
+	// filters any that slip through anyway.
+	excluded: string[];
 }
 
 interface FavoriteGame {
@@ -33,40 +36,50 @@ interface FavoriteGame {
 
 interface SuggestRequestBody {
 	games: FavoriteGame[];
+	// Full library (any status) — suggestions must be games the player does NOT already have.
+	excluded: string[];
 }
 
-// The chat flow is a deterministic two-step exchange enforced in code (see `handleChat`), not
-// left to the model to decide — an earlier version asked Groq to judge "should I search or
-// clarify" from prose instructions, and it frequently searched immediately anyway. Now the
-// frontend tells the endpoint which mode this turn is (`awaitingAnswer`), so there's no
-// ambiguity for the model to get wrong: every new ask gets exactly one clarifying question
-// first (this prompt), then the immediate next message always searches (`SEARCH_SYSTEM_PROMPT`).
-// The conversation history keeps accumulating across the whole session (never reset), so a user
-// can keep chatting afterward to refine or go deeper — each new ask still gets its own
-// clarifying question, but with the full prior conversation as context.
-const CLARIFY_SYSTEM_PROMPT = `A player just asked for a game recommendation (see the conversation so far for any earlier context in this session). Your ONLY job is to ask exactly one clarifying question. Do not suggest any games yet.
+// Applies to every prompt below: the conversation history can span multiple unrelated asks in one
+// session (history is never truncated, by design — so the player can keep chatting to refine or
+// go deeper). When the player's latest message changes topic from what came before, treat only
+// the current ask as live — earlier unrelated turns are background, not something to keep
+// blending into the answer.
+const TOPIC_FOCUS_NOTE = `The conversation history may contain earlier, unrelated asks from the same session (history is never cleared so the player can keep chatting). Always resolve the CURRENT ask from the most recent messages — if the player has clearly moved on to a new topic, do not keep mixing in requirements from an earlier unrelated ask.`;
 
-First, mentally list what the request ALREADY tells you (genre, named game, mechanics, mood, setting, etc.) — then ask about something that is genuinely still unknown, not something already answered by the request itself. Never ask a question whose answer the player already gave you (e.g. don't ask singleplayer-vs-multiplayer if they already said "MMORPG"; don't ask "what genre" if they already named one).
+// Every chat turn uses this single prompt. The model's job each round is to maintain a REAL
+// candidate pool (actual titles it can name, not a fabricated count) plus the one question that
+// would best split that pool. Whether to show results or ask the question is decided in
+// `handleChat` from the pool's actual size — never by the model's own judgment, which we've
+// learned not to trust for flow control (it used to skip clarifying entirely when asked to
+// self-judge). A specific first message can therefore get instant results (small pool), while a
+// vague one naturally enters a narrowing loop (big pool → question → smaller pool → ...).
+function narrowSystemPrompt(questionsAsked: number, excluded: string[]): string {
+	const exclusionNote =
+		excluded.length > 0
+			? `\nThe player already has these games in their library — NEVER include any of them (or a remaster/edition of one) as a candidate: ${excluded.join(", ")}.\n`
+			: "";
+	return `A player is asking for game recommendations (see the conversation so far — they've answered ${questionsAsked} clarifying question(s) for the current ask).
 
-Possible axes to ask about — pick whichever ONE is most useful given what's still missing (do not default to the same axis every time):
-- Setting/theme (fantasy, sci-fi, modern, historical, post-apocalyptic...)
-- Tone (lighthearted/wholesome vs. dark/gritty, serious vs. goofy)
-- Pacing/commitment (short quick sessions vs. a long game to sink hours into)
-- Difficulty/challenge level
-- Social angle (solo-friendly, small co-op, or big group content) — only if not already implied
-- Art style/perspective (pixel art, realistic, top-down, first-person...)
-- A specific mechanic or feature they most want to revolve around
-- What they enjoyed most about a game they named, if the request centers on a specific game rather than a genre
+${TOPIC_FOCUS_NOTE}
+${exclusionNote}
+Your job each turn, in two parts:
+
+1. CANDIDATES — list the real, specific games you know of that fit everything the player has said so far in the current ask. The list's size must honestly reflect how narrowed-down the request is:
+   - Vague or broad request → 12 to 20 genuinely diverse candidates spanning the plausible interpretations.
+   - Well-specified request → only the games that truly fit, even if that's just 4-6.
+   Every candidate needs a "reason": a short phrase (under 12 words) tying it to what THIS player asked for — not a generic blurb. Never pad the list with reskins/sequels/near-duplicates of the same game, and prioritize variety across developers/series.
+   If the player signals they just want results now ("just show me", "surprise me", "whatever you think"), cut the list to your best 8 or fewer regardless of how broad the ask still is.
+
+2. QUESTION — if your candidate list has more than 8 entries, also write the ONE question whose answer would best split the list into meaningfully different subsets (setting, tone, pacing, difficulty, social angle, art style, a defining mechanic, what they loved about a game they named...). Each option you offer should correspond to a real subset of your candidates. Never re-ask something the player already answered, and don't repeat an axis you already asked about in this ask. If your list is already 8 or fewer, set "question" to null.
+
+Also write "reasoning": one short sentence summarizing why this set fits the ask (used as the lead-in when results are shown).
 
 Reply with ONLY strict JSON, no prose, no markdown fences, in this exact shape:
-{"question": "<one short clarifying question>", "options": ["<short choice>", "..."] or null, "multiSelect": <true or false>}
+{"candidates": [{"title": "<specific real game title>", "reason": "<why it fits, under 12 words>"}, ...], "reasoning": "<one short sentence>", "question": "<one short question>" or null, "options": ["<short choice>", "..."] or null, "multiSelect": <true or false>}
 
-Set "multiSelect": true when more than one option could reasonably apply at once (e.g. tone, things they enjoy); set it false for a single either/or choice (e.g. difficulty level). Include "options" (2-5 short answers) whenever the question has natural discrete choices; use "options": null only for a genuinely open-ended question.`;
-
-const SEARCH_SYSTEM_PROMPT = `A player asked for a game recommendation, you asked one clarifying question, and they've now answered it (see the conversation so far). Using their original request plus their answer, name 4 to 8 SPECIFIC, DISTINCT real games you know of that fit — never the same game or a reskin/sequel/clone of it repeated with minor name variations. Prioritize variety across different developers/series.
-
-Reply with ONLY strict JSON, no prose, no markdown fences, in this exact shape:
-{"titles": ["<specific real game title>", "..."], "reasoning": "<one short sentence on why these fit>"}`;
+Set "multiSelect": true when more than one option could reasonably apply at once; false for an either/or choice. Use "options": null only for a genuinely open-ended question.`;
+}
 
 const SUGGEST_SYSTEM_PROMPT = `A player's most-played/enjoyed games are given to you. Suggest 4 to 8 SPECIFIC, DISTINCT real games they might also enjoy, based on genre and style — never the same game, a reskin, a sequel, or a near-duplicate title repeated with minor variations. Prioritize variety across different developers/series while still matching the player's taste.
 
@@ -103,17 +116,17 @@ async function callGroq(env: Env, systemPrompt: string, messages: { role: string
 }
 
 const FALLBACK_CLARIFY = {
-	type: "clarify",
 	question: "Could you tell me a bit more about what you're in the mood for?",
 	options: null,
 	multiSelect: false,
+	candidateCount: null,
 };
 
 const UNREACHABLE_CLARIFY = {
-	type: "clarify",
 	question: "I'm having trouble reaching the recommendation service right now — try again in a moment.",
 	options: null,
 	multiSelect: false,
+	candidateCount: null,
 };
 
 async function handleChat(request: Request, env: Env): Promise<Response> {
@@ -122,7 +135,7 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
 		body = await request.json();
 	} catch {
 		return json(
-			{ type: "clarify", question: "Sorry, I didn't catch that — could you rephrase?", options: null, multiSelect: false },
+			{ question: "Sorry, I didn't catch that — could you rephrase?", options: null, multiSelect: false, candidateCount: null },
 			400,
 		);
 	}
@@ -132,38 +145,54 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
 		{ role: "user", content: body.message },
 	];
 
-	if (!body.awaitingAnswer) {
-		const groqResponse = await callGroq(env, CLARIFY_SYSTEM_PROMPT, messages);
-		if (!groqResponse.ok) return json(UNREACHABLE_CLARIFY, 502);
+	const questionsAsked = body.questionsAsked ?? 0;
+	const excluded = body.excluded ?? [];
 
-		const groqData = await groqResponse.json<{ choices: { message: { content: string } }[] }>();
-		const raw = groqData.choices?.[0]?.message?.content ?? "";
-
-		try {
-			const parsed = JSON.parse(raw) as { question: string; options?: string[] | null; multiSelect?: boolean };
-			return json({
-				type: "clarify",
-				question: parsed.question,
-				options: parsed.options ?? null,
-				multiSelect: !!parsed.multiSelect,
-			});
-		} catch {
-			return json(FALLBACK_CLARIFY);
-		}
-	}
-
-	const groqResponse = await callGroq(env, SEARCH_SYSTEM_PROMPT, messages);
+	const groqResponse = await callGroq(env, narrowSystemPrompt(questionsAsked, excluded), messages);
 	if (!groqResponse.ok) return json(UNREACHABLE_CLARIFY, 502);
 
 	const groqData = await groqResponse.json<{ choices: { message: { content: string } }[] }>();
 	const raw = groqData.choices?.[0]?.message?.content ?? "";
 
+	let parsed: {
+		candidates?: { title?: string; reason?: string }[];
+		reasoning?: string;
+		question?: string | null;
+		options?: string[] | null;
+		multiSelect?: boolean;
+	};
 	try {
-		const parsed = JSON.parse(raw) as { titles?: string[]; reasoning?: string };
-		return json({ type: "search", titles: parsed.titles ?? [], reasoning: parsed.reasoning ?? "" });
+		parsed = JSON.parse(raw);
 	} catch {
 		return json(FALLBACK_CLARIFY);
 	}
+
+	// Belt-and-braces on top of the prompt: drop any owned title that slipped through anyway.
+	const excludedLower = new Set(excluded.map((n) => n.toLowerCase()));
+	const candidates = (parsed.candidates ?? [])
+		.filter((c): c is { title: string; reason?: string } => typeof c?.title === "string" && c.title.length > 0)
+		.filter((c) => !excludedLower.has(c.title.toLowerCase()))
+		.map((c) => ({ title: c.title, reason: c.reason ?? null }));
+
+	// The show-results-vs-keep-narrowing decision lives HERE, not in the model: a focused pool
+	// (or a hit round cap, or the model returning no question) means results now; otherwise ask
+	// the pool-splitting question and report the real pool size so the UI can show honest
+	// narrowing progress.
+	const capReached = questionsAsked >= 4;
+	if (candidates.length > 0 && (candidates.length <= 8 || capReached || !parsed.question)) {
+		return json({ titles: candidates.slice(0, 8), reasoning: parsed.reasoning ?? "" });
+	}
+
+	if (parsed.question) {
+		return json({
+			question: parsed.question,
+			options: parsed.options ?? null,
+			multiSelect: !!parsed.multiSelect,
+			candidateCount: candidates.length > 0 ? candidates.length : null,
+		});
+	}
+
+	return json(FALLBACK_CLARIFY);
 }
 
 async function handleSuggest(request: Request, env: Env): Promise<Response> {
@@ -175,7 +204,12 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
 	}
 
 	const gamesList = body.games.map((g) => `${g.name}${g.genre ? ` (${g.genre})` : ""}`).join(", ");
-	const messages = [{ role: "user", content: `Player's favorite games: ${gamesList}` }];
+	const excluded = body.excluded ?? [];
+	const exclusionNote =
+		excluded.length > 0
+			? ` The player already has these games — never suggest any of them (or a remaster/edition of one): ${excluded.join(", ")}.`
+			: "";
+	const messages = [{ role: "user", content: `Player's favorite games: ${gamesList}.${exclusionNote}` }];
 
 	const groqResponse = await callGroq(env, SUGGEST_SYSTEM_PROMPT, messages);
 
@@ -187,7 +221,10 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
 	const raw = groqData.choices?.[0]?.message?.content ?? "";
 
 	try {
-		return json(JSON.parse(raw));
+		const parsed = JSON.parse(raw) as { titles?: string[]; reasoning?: string };
+		const excludedLower = new Set(excluded.map((n) => n.toLowerCase()));
+		const titles = (parsed.titles ?? []).filter((t) => !excludedLower.has(t.toLowerCase()));
+		return json({ titles, reasoning: parsed.reasoning ?? "" });
 	} catch {
 		return json({ titles: [], reasoning: "" });
 	}

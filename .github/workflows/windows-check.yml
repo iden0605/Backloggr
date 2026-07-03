@@ -1,0 +1,31 @@
+# Compile-checks the Rust backend for the real ship target (Windows). Development happens on
+# macOS, where the Windows-only code paths (`#[cfg(target_os = "windows")]` in clipper.rs, the
+# `windows` crate dependency) are never compiled — a broken Windows build is invisible locally
+# (an un-compilable import shipped exactly this way once and was only caught in review).
+name: windows-check
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # tauri::generate_context! requires the frontendDist directory ("../dist") to exist at
+      # compile time; an empty placeholder is enough for `cargo check` (no real frontend build
+      # needed just to type-check the Rust side).
+      - name: Create placeholder frontend dist
+        run: mkdir dist
+
+      - name: cargo check (Windows target)
+        run: cargo check --manifest-path src-tauri/Cargo.toml

@@ -75,9 +75,9 @@ function formatDayLabel(date: string): string {
 
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-      <p className="text-sm text-neutral-400">{label}</p>
-      <p className="mt-1 text-2xl font-semibold">{value}</p>
+    <div className="rounded-xl border border-border bg-surface p-4 transition-colors hover:border-border/80">
+      <p className="text-xs font-medium text-text-lo">{label}</p>
+      <p className="mt-1.5 text-2xl font-semibold text-text-hi">{value}</p>
     </div>
   );
 }
@@ -96,24 +96,24 @@ function CurrentlyPlayingBanner({ session }: { session: CurrentlyPlaying }) {
   }, [session.startedAt]);
 
   return (
-    <div className="flex items-center gap-4 rounded-lg border border-emerald-800 bg-emerald-950/40 p-4">
+    <div className="flex items-center gap-4 rounded-xl border border-accent/25 bg-accent/[0.06] p-4">
       {session.coverUrl ? (
         <img
           src={session.coverUrl}
           alt={session.name}
-          className="h-16 w-16 rounded object-cover"
+          className="h-16 w-16 rounded-lg object-cover"
         />
       ) : (
-        <div className="h-16 w-16 rounded bg-neutral-800" />
+        <div className="h-16 w-16 rounded-lg bg-gradient-to-br from-surface-alt to-surface" />
       )}
       <div className="flex-1">
-        <p className="flex items-center gap-2 text-sm font-medium text-emerald-400">
-          <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
+        <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-accent">
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
           Currently Playing
         </p>
-        <p className="mt-1 text-lg font-semibold">{session.name}</p>
+        <p className="mt-1.5 text-lg font-semibold text-text-hi">{session.name}</p>
       </div>
-      <p className="font-mono text-2xl tabular-nums text-emerald-300">
+      <p className="font-mono text-2xl tabular-nums text-accent">
         {formatElapsed(elapsedSeconds)}
       </p>
     </div>
@@ -122,14 +122,14 @@ function CurrentlyPlayingBanner({ session }: { session: CurrentlyPlaying }) {
 
 function GamePlaytimeRow({ game }: { game: GamePlaytime }) {
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+    <div className="flex items-center gap-3 rounded-xl border border-border bg-surface p-3 transition-colors hover:border-border/80 hover:bg-surface-alt/40">
       {game.coverUrl ? (
-        <img src={game.coverUrl} alt={game.name} className="h-12 w-12 rounded object-cover" />
+        <img src={game.coverUrl} alt={game.name} className="h-12 w-12 rounded-lg object-cover" />
       ) : (
-        <div className="h-12 w-12 rounded bg-neutral-800" />
+        <div className="h-12 w-12 rounded-lg bg-gradient-to-br from-surface-alt to-surface" />
       )}
-      <p className="flex-1 truncate font-medium">{game.name}</p>
-      <p className="text-neutral-400">{formatDuration(game.totalSeconds)}</p>
+      <p className="flex-1 truncate text-[13.5px] font-medium text-text-hi">{game.name}</p>
+      <p className="font-mono text-xs text-text-lo">{formatDuration(game.totalSeconds)}</p>
     </div>
   );
 }
@@ -177,11 +177,11 @@ export function Dashboard() {
   }, [period, loadCurrentlyPlaying, loadStats]);
 
   if (error) {
-    return <p className="text-red-400">Failed to load dashboard: {error}</p>;
+    return <p className="text-sm text-danger">Failed to load dashboard: {error}</p>;
   }
 
   if (!stats) {
-    return <p className="text-neutral-400">Loading dashboard…</p>;
+    return <p className="text-sm text-text-lo">Loading dashboard…</p>;
   }
 
   const chartData = stats.playtimeLast7Days.map((d) => ({
@@ -191,33 +191,40 @@ export function Dashboard() {
 
   return (
     <div>
-      <h1 className="text-2xl font-semibold">Dashboard</h1>
+      <h1 className="page-title text-[26px]">Dashboard</h1>
 
       {currentlyPlaying && (
-        <div className="mt-4">
+        <div className="mt-5 animate-fade-up">
           <CurrentlyPlayingBanner session={currentlyPlaying} />
         </div>
       )}
 
-      <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
+      <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatCard label={`Playtime (${PERIODS.find((p) => p.value === period)?.label})`} value={formatDuration(stats.totalPlaytimeSeconds)} />
         <StatCard label="Currently Playing" value={String(stats.gamesPlaying)} />
         <StatCard label="Completed" value={String(stats.gamesCompleted)} />
         <StatCard label="Backlog" value={String(stats.gamesInBacklog)} />
       </div>
 
-      <div className="mt-6 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-        <h2 className="text-lg font-medium">Playtime — Last 7 Days</h2>
-        <div className="mt-2 h-48">
+      <div className="mt-6 rounded-xl border border-border bg-surface p-4">
+        <h2 className="text-sm font-semibold text-text-hi">Playtime — Last 7 Days</h2>
+        <div className="mt-3 h-48">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={chartData}>
-              <XAxis dataKey="day" stroke="#a3a3a3" fontSize={12} />
-              <YAxis stroke="#a3a3a3" fontSize={12} allowDecimals={false} />
+              <XAxis dataKey="day" stroke="#8FA3A8" fontSize={11} tickLine={false} axisLine={false} />
+              <YAxis stroke="#8FA3A8" fontSize={11} allowDecimals={false} tickLine={false} axisLine={false} />
               <Tooltip
-                contentStyle={{ background: "#171717", border: "1px solid #404040" }}
+                cursor={{ fill: "rgba(45, 212, 191, 0.06)" }}
+                contentStyle={{
+                  background: "#1A262B",
+                  border: "1px solid #253337",
+                  borderRadius: 10,
+                  fontSize: 12,
+                  color: "#EEF4F5",
+                }}
                 formatter={(value) => [`${value}h`, "Playtime"]}
               />
-              <Bar dataKey="hours" fill="#6366f1" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="hours" fill="#2DD4BF" radius={[5, 5, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -225,16 +232,16 @@ export function Dashboard() {
 
       <div className="mt-6">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-medium">Games Played</h2>
-          <div className="flex gap-1 rounded-lg bg-neutral-900 p-1">
+          <h2 className="text-sm font-semibold text-text-hi">Games Played</h2>
+          <div className="flex gap-1 rounded-lg bg-surface p-1">
             {PERIODS.map((p) => (
               <button
                 key={p.value}
                 onClick={() => setPeriod(p.value)}
-                className={`rounded-md px-3 py-1 text-sm transition-colors ${
+                className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
                   period === p.value
-                    ? "bg-indigo-600 text-white"
-                    : "text-neutral-400 hover:text-neutral-200"
+                    ? "bg-accent text-bg"
+                    : "text-text-lo hover:text-text-hi"
                 }`}
               >
                 {p.label}
@@ -244,7 +251,7 @@ export function Dashboard() {
         </div>
 
         {stats.gamesPlayed.length === 0 ? (
-          <p className="mt-3 text-sm text-neutral-400">
+          <p className="mt-4 text-sm text-text-lo">
             No playtime tracked for this period yet.
           </p>
         ) : (
