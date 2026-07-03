@@ -34,7 +34,6 @@ use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_notification::NotificationExt;
 
 const SEGMENT_SECONDS: u32 = 10;
 /// Ring buffer depth — 18 * 10s = 3 minutes of rolling footage available to save from.
@@ -44,6 +43,7 @@ const DEFAULT_CLIP_SECONDS: u32 = 30;
 const MIN_CLIP_SECONDS: u32 = 5;
 const MAX_CLIP_SECONDS: u32 = 120;
 const CLIP_SECONDS_SETTING_KEY: &str = "clip_seconds";
+const MIC_ENABLED_SETTING_KEY: &str = "mic_enabled";
 
 pub struct Capture {
     child: Child,
@@ -67,12 +67,23 @@ pub struct CaptureSlot {
     /// likely failing on its audio input (mic permission denied, device vanished) — after two
     /// strikes, subsequent spawns drop audio rather than crash-looping forever.
     respawn_strikes: u8,
+    /// Set when the capture child was killed on purpose (mic setting changed) so the watchdog
+    /// treats the next respawn as a fresh start (wiping the buffer — segments recorded with a
+    /// different stream layout can't be concatenated with the new spawn's) instead of counting
+    /// an audio-input strike against it.
+    restart_requested: bool,
     phase: Option<Capture>,
 }
 
 impl CaptureSlot {
     pub fn idle() -> Self {
-        CaptureSlot { generation: 0, exe_name: None, respawn_strikes: 0, phase: None }
+        CaptureSlot {
+            generation: 0,
+            exe_name: None,
+            respawn_strikes: 0,
+            restart_requested: false,
+            phase: None,
+        }
     }
 }
 
@@ -192,6 +203,125 @@ fn find_window_title_for_exe(exe_name: &str) -> Option<String> {
     search.found
 }
 
+/// macOS: the on-screen bounds (in display POINTS, global coordinates) of a normal-layer window
+/// owned by a process whose name matches `exe_name`, plus the main display's point size — via
+/// CGWindowListCopyWindowInfo, which needs no TCC permission for bounds (only window *names*
+/// require the Screen Recording grant). Used by `save_clip` to crop the saved clip down to just
+/// the game's window: avfoundation can only capture whole displays (unlike Windows' gdigrab
+/// window capture), so the scoping happens at save time on the output instead. Returns `None`
+/// when the window can't be found or sits (partly) outside the main display — the caller falls
+/// back to the uncropped full frame.
+#[cfg(target_os = "macos")]
+fn game_window_rect_points(exe_name: &str) -> Option<((f64, f64, f64, f64), (f64, f64))> {
+    use core_foundation::base::{CFType, TCFType};
+    use core_foundation::dictionary::CFDictionary;
+    use core_foundation::number::CFNumber;
+    use core_foundation::string::CFString;
+    use core_graphics::display::CGDisplay;
+    use core_graphics::geometry::CGRect;
+    use core_graphics::window::{
+        copy_window_info, kCGNullWindowID, kCGWindowListExcludeDesktopElements,
+        kCGWindowListOptionOnScreenOnly,
+    };
+
+    let exe_norm = crate::tracker::normalize_exe_name(exe_name);
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes();
+    let pids: Vec<i64> = sys
+        .processes()
+        .iter()
+        .filter(|(_, p)| {
+            let name = crate::tracker::normalize_exe_name(p.name());
+            name == exe_norm || name.contains(&exe_norm) || exe_norm.contains(&name)
+        })
+        .map(|(pid, _)| pid.as_u32() as i64)
+        .collect();
+    if pids.is_empty() {
+        return None;
+    }
+
+    let display = CGDisplay::main();
+    let display_bounds = display.bounds();
+    let (dw, dh) = (display_bounds.size.width, display_bounds.size.height);
+
+    let windows = copy_window_info(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+        kCGNullWindowID,
+    )?;
+    let pid_key = CFString::from_static_string("kCGWindowOwnerPID");
+    let bounds_key = CFString::from_static_string("kCGWindowBounds");
+
+    let mut best: Option<(f64, f64, f64, f64)> = None;
+    for item in windows.iter() {
+        let dict: CFDictionary<CFString, CFType> =
+            unsafe { CFDictionary::wrap_under_get_rule(*item as *const _) };
+        let Some(pid) = dict.find(&pid_key).and_then(|v| v.downcast::<CFNumber>()).and_then(|n| n.to_i64())
+        else {
+            continue;
+        };
+        if !pids.contains(&pid) {
+            continue;
+        }
+        // Fullscreen games sit on non-zero window layers, so no layer filtering — tiny utility/
+        // tooltip windows are excluded by size below, and the LARGEST matching window wins.
+        let Some(bounds_dict) = dict.find(&bounds_key).and_then(|v| v.downcast::<CFDictionary>())
+        else {
+            continue;
+        };
+        let Some(rect) = CGRect::from_dict_representation(&bounds_dict) else { continue };
+        let (x, y, w, h) = (rect.origin.x, rect.origin.y, rect.size.width, rect.size.height);
+        // Ignore tiny utility/tooltip windows; keep the largest real window.
+        if w < 120.0 || h < 90.0 {
+            continue;
+        }
+        if best.map_or(true, |(_, _, bw, bh)| w * h > bw * bh) {
+            best = Some((x, y, w, h));
+        }
+    }
+    let rect = best?;
+
+    // Only croppable when fully on the main display — avfoundation captures "Capture screen 0"
+    // (the main display), so a window on a second monitor isn't in the frame at all.
+    let (x, y, w, h) = rect;
+    if x < 0.0 || y < 0.0 || x + w > dw || y + h > dh {
+        return None;
+    }
+    Some((rect, (dw, dh)))
+}
+
+/// Builds an ffmpeg `crop=` filter cutting the frame down to the game window's current bounds.
+/// `input_w`/`input_h` are the capture's real pixel dimensions (probed from a segment file) —
+/// the point→pixel scale factor is derived from those against the display's point size, because
+/// nothing else reliably matches how avfoundation picks its capture resolution on Retina
+/// displays (it captures the native panel resolution, which is neither the point size nor the
+/// scaled backing size).
+#[cfg(target_os = "macos")]
+fn crop_filter_for_game_window(exe_name: &str, input_w: u32, input_h: u32) -> Option<String> {
+    let ((x, y, w, h), (dw, dh)) = game_window_rect_points(exe_name)?;
+    let scale_x = input_w as f64 / dw;
+    let scale_y = input_h as f64 / dh;
+    // Round to even values — yuv420p requires even dimensions.
+    let even = |v: f64| (v.max(0.0) as u32) & !1;
+    let (cx, cy) = (even(x * scale_x), even(y * scale_y));
+    let (mut cw, mut ch) = (even(w * scale_x), even(h * scale_y));
+    cw = cw.min(input_w.saturating_sub(cx));
+    ch = ch.min(input_h.saturating_sub(cy));
+    if cw < 64 || ch < 64 {
+        return None;
+    }
+    // A window covering (nearly) the whole display — fullscreen game — needs no crop.
+    if cw >= input_w - 4 && ch >= input_h - 4 {
+        return None;
+    }
+    Some(format!("crop={cw}:{ch}:{cx}:{cy}"))
+}
+
+#[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
+fn crop_filter_for_game_window(_exe_name: &str, _input_w: u32, _input_h: u32) -> Option<String> {
+    None
+}
+
 /// Whether a window-scoped capture could be started for this exe right now — used by
 /// `ensure_capture` to decide when a desktop-fallback capture is worth restarting scoped.
 #[cfg(target_os = "windows")]
@@ -284,91 +414,205 @@ pub fn record_focus_sample(app: &AppHandle, focused: bool) {
     }
 }
 
-/// Windows-only: first dshow audio device name (the default mic, typically), enumerated at
-/// spawn time via ffmpeg's device listing. Mic capture is the audio ffmpeg CAN do with zero
-/// external setup on Windows — full system-audio loopback (game sound, Discord calls) needs
-/// either a third-party virtual device (VB-Cable — an install we refuse to require) or a
-/// WASAPI-loopback capture backend beyond plain ffmpeg; that upgrade is planned alongside the
-/// packaging work, not patched here.
+/// Device names that are system-audio LOOPBACKS rather than real microphones — virtual devices
+/// that replay whatever the system (i.e. the game) outputs. macOS has no built-in loopback;
+/// BlackHole/Soundflower/Loopback are the standard installs. Windows sometimes exposes the
+/// driver-level "Stereo Mix", or "virtual-audio-capturer" from screen-capture-recorder.
+fn is_loopback_device_name(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    ["blackhole", "soundflower", "loopback", "stereo mix", "what u hear", "virtual-audio-capturer"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+}
+
+/// Windows-only: dshow audio device names, in listing order.
 #[cfg(target_os = "windows")]
-fn first_dshow_audio_device() -> Option<String> {
-    let output = std::process::Command::new("ffmpeg")
+fn dshow_audio_devices() -> Vec<String> {
+    let Ok(output) = std::process::Command::new("ffmpeg")
         .args(["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .output()
-        .ok()?;
+    else {
+        return Vec::new();
+    };
     let stderr = String::from_utf8_lossy(&output.stderr);
-    for line in stderr.lines() {
+    stderr
+        .lines()
         // Lines look like: [dshow @ ...] "Microphone (Realtek Audio)" (audio)
-        if line.contains("(audio)") {
+        .filter(|line| line.contains("(audio)"))
+        .filter_map(|line| {
             let start = line.find('"')?;
             let rest = &line[start + 1..];
             let end = rest.find('"')?;
-            return Some(rest[..end].to_string());
-        }
-    }
-    None
+            Some(rest[..end].to_string())
+        })
+        .collect()
 }
 
-/// OS-specific capture-input args for ffmpeg, plus whether the capture is scoped to the game's
-/// window (`true` = structurally contains only the game's own window). On Windows, scopes to the
-/// tracked game's window when its title resolves, falling back to the full desktop otherwise.
-/// macOS is always full-screen (`false`) — ffmpeg's avfoundation input has no window mode, a
-/// real, documented limitation of the dev-only Mac path; the focus sampler + save-time black-out
-/// compensate. `None` on unsupported OSes.
+/// Windows-only: the dshow device to use as the MIC. dshow has no "default device" concept
+/// (unlike avfoundation), so prefer a device that calls itself a microphone — headsets, webcams,
+/// and built-in arrays all do — over whatever happens to be listed first, and never a loopback.
+#[cfg(target_os = "windows")]
+fn dshow_mic_device(devices: &[String]) -> Option<String> {
+    devices
+        .iter()
+        .filter(|d| !is_loopback_device_name(d))
+        .find(|d| d.to_lowercase().contains("mic"))
+        .or_else(|| devices.iter().find(|d| !is_loopback_device_name(d)))
+        .cloned()
+}
+
+/// macOS: device indexes parsed fresh from ffmpeg's avfoundation listing (stderr) — the screen
+/// video device ("Capture screen 0") and, when one is installed, a system-audio loopback device
+/// (BlackHole etc., see `is_loopback_device_name`). Indexes must be parsed per spawn: connected
+/// devices (iPhone, headsets) shift them, which is exactly how a hardcoded mic index silently
+/// became BlackHole in live testing.
+#[cfg(target_os = "macos")]
+fn avfoundation_devices() -> (Option<u32>, Option<u32>) {
+    let Ok(output) = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .output()
+    else {
+        return (None, None);
+    };
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Lines look like: [AVFoundation indev @ 0x...] [2] Capture screen 0 — the entry index is
+    // the LAST bracket (the line starts with the logger's own "[AVFoundation indev @ ...]").
+    fn entry(line: &str) -> Option<(u32, &str)> {
+        let idx = line.rfind('[')?;
+        let rest = &line[idx + 1..];
+        let (num, name) = rest.split_once(']')?;
+        Some((num.trim().parse().ok()?, name.trim()))
+    }
+
+    let (mut screen, mut loopback) = (None, None);
+    let mut in_audio_section = false;
+    for line in stderr.lines() {
+        if line.contains("AVFoundation audio devices") {
+            in_audio_section = true;
+            continue;
+        }
+        let Some((idx, name)) = entry(line) else { continue };
+        if !in_audio_section && name.starts_with("Capture screen") && screen.is_none() {
+            screen = Some(idx);
+        }
+        if in_audio_section && is_loopback_device_name(name) && loopback.is_none() {
+            loopback = Some(idx);
+        }
+    }
+    (screen, loopback)
+}
+
+/// Everything `spawn_ffmpeg` needs to know about the capture inputs.
+struct CaptureInputs {
+    /// The `-f ... -i ...` argument runs, in input order. Input 0 always carries the video.
+    args: Vec<String>,
+    /// Whether the capture is scoped to the game's window (see `Capture::window_scoped`).
+    window_scoped: bool,
+    /// Stream specifiers ("0:a", "1:a", ...) of every audio track across the inputs. 0 = no
+    /// audio; 1 = mapped straight through; 2 = mixed with `amix` (mic + system loopback).
+    audio_maps: Vec<String>,
+}
+
+/// OS-specific capture inputs for ffmpeg. On Windows, video scopes to the tracked game's window
+/// when its title resolves, falling back to the full desktop otherwise. macOS video is always
+/// the whole screen — ffmpeg's avfoundation input has no window mode, a real, documented
+/// limitation of the dev-only Mac path; the focus sampler + save-time black-out/crop compensate.
+/// `None` on unsupported OSes.
 ///
-/// `with_audio` adds a mic input (audio is deliberately captured through tab-outs — the video
-/// gets masked at save time, the audio track never does). See `CaptureSlot::respawn_strikes` for
-/// the fallback that turns this off if the audio input keeps killing the capture.
+/// Audio (all captured through tab-outs — only the video gets masked at save time):
+/// - `with_mic`: the user's microphone. macOS uses avfoundation's `default` keyword (follows the
+///   system-default input — built-in, headset, whatever the user actively uses); Windows picks
+///   the most microphone-looking dshow device since dshow has no default-device concept.
+/// - GAME/system audio rides in via a loopback device whenever one is installed (BlackHole etc.
+///   on macOS, Stereo Mix/virtual-audio-capturer on Windows — see `is_loopback_device_name`),
+///   added unconditionally as its own input: an unrouted loopback just contributes silence.
+///   Neither OS can capture system audio with plain ffmpeg WITHOUT such a device; a native
+///   WASAPI-loopback path for Windows is a packaging-stage upgrade (task 16).
+///
+/// See `CaptureSlot::respawn_strikes` for the fallback that drops ALL audio inputs if they keep
+/// killing the capture.
 fn capture_input_args(
     #[allow(unused_variables)] exe_name: Option<&str>,
-    with_audio: bool,
-) -> Option<(Vec<String>, bool)> {
+    with_mic: bool,
+    with_loopback: bool,
+) -> Option<CaptureInputs> {
+    // Live inputs each get a generous queue so one slow device can't stall the others.
+    fn push_input(args: &mut Vec<String>, input: &[&str]) {
+        args.extend(["-thread_queue_size".into(), "512".into()]);
+        args.extend(input.iter().map(|s| s.to_string()));
+    }
+
     if cfg!(target_os = "windows") {
         #[cfg(target_os = "windows")]
-        let title = exe_name.and_then(find_window_title_for_exe);
-        #[cfg(not(target_os = "windows"))]
-        let title: Option<String> = None;
+        {
+            let title = exe_name.and_then(find_window_title_for_exe);
+            let (mut args, window_scoped) = match title {
+                Some(t) => {
+                    let mut a = Vec::new();
+                    push_input(&mut a, &["-f", "gdigrab", "-i", &format!("title={t}")]);
+                    (a, true)
+                }
+                None => {
+                    let mut a = Vec::new();
+                    push_input(&mut a, &["-f", "gdigrab", "-i", "desktop"]);
+                    (a, false)
+                }
+            };
 
-        // `mut` is only exercised by the Windows-gated audio extend below.
-        #[allow(unused_mut)]
-        let (mut args, scoped) = match title {
-            Some(t) => (
-                vec!["-f".into(), "gdigrab".into(), "-i".into(), format!("title={t}")],
-                true,
-            ),
-            None => (
-                vec!["-f".into(), "gdigrab".into(), "-i".into(), "desktop".into()],
-                false,
-            ),
-        };
-
-        #[cfg(target_os = "windows")]
-        if with_audio {
-            if let Some(mic) = first_dshow_audio_device() {
-                args.extend([
-                    "-f".into(),
-                    "dshow".into(),
-                    "-i".into(),
-                    format!("audio={mic}"),
-                ]);
+            let devices = dshow_audio_devices();
+            let mut audio_maps = Vec::new();
+            let mut input_idx = 1;
+            if with_mic {
+                if let Some(mic) = dshow_mic_device(&devices) {
+                    push_input(&mut args, &["-f", "dshow", "-i", &format!("audio={mic}")]);
+                    audio_maps.push(format!("{input_idx}:a"));
+                    input_idx += 1;
+                }
             }
+            if with_loopback {
+                if let Some(lb) = devices.iter().find(|d| is_loopback_device_name(d)) {
+                    push_input(&mut args, &["-f", "dshow", "-i", &format!("audio={lb}")]);
+                    audio_maps.push(format!("{input_idx}:a"));
+                }
+            }
+            Some(CaptureInputs { args, window_scoped, audio_maps })
         }
         #[cfg(not(target_os = "windows"))]
-        let _ = with_audio;
-
-        Some((args, scoped))
+        None
     } else if cfg!(target_os = "macos") {
-        // The device indexes avfoundation reports aren't portable across Macs — run
-        // `ffmpeg -f avfoundation -list_devices true -i ""` to find yours. On the dev machine
-        // this was written on: screen = 2 ("Capture screen 0"), mic = 1 ("MacBook Air
-        // Microphone"). "video:audio" in one input; ":none" skips audio.
-        let input = if with_audio { "2:1" } else { "2:none" };
-        Some((
-            vec!["-f".into(), "avfoundation".into(), "-i".into(), input.into()],
-            false,
-        ))
+        #[cfg(target_os = "macos")]
+        {
+            let (screen, loopback) = avfoundation_devices();
+            let screen = screen.unwrap_or(2);
+            let mut args = Vec::new();
+            let mut audio_maps = Vec::new();
+            // Screen + mic ride in one avfoundation input ("video:audio").
+            let input = if with_mic {
+                format!("{screen}:default")
+            } else {
+                format!("{screen}:none")
+            };
+            push_input(&mut args, &["-f", "avfoundation", "-i", &input]);
+            if with_mic {
+                audio_maps.push("0:a".into());
+            }
+            // The loopback (game/system audio) needs its own avfoundation instance — one input
+            // can only open a single audio device.
+            if with_loopback {
+                if let Some(lb) = loopback {
+                    push_input(&mut args, &["-f", "avfoundation", "-i", &format!("none:{lb}")]);
+                    audio_maps.push("1:a".into());
+                }
+            }
+            Some(CaptureInputs { args, window_scoped: false, audio_maps })
+        }
+        #[cfg(not(target_os = "macos"))]
+        None
     } else {
         None
     }
@@ -435,7 +679,7 @@ static SPAWN_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::n
 /// Spawns one rolling-buffer ffmpeg process writing into `dir`. Assumes `ffmpeg` is resolvable on
 /// PATH — bundling it as a Tauri sidecar binary is a packaging follow-up (release-workflow stage,
 /// task 16), not a capture-logic change.
-fn spawn_ffmpeg(dir: &Path, input_args: &[String]) -> Option<Child> {
+fn spawn_ffmpeg(dir: &Path, inputs: &CaptureInputs) -> Option<Child> {
     let seq = SPAWN_SEQ.fetch_add(1, Ordering::SeqCst);
     let pattern = dir.join(format!("segment_{seq:05}_%03d.ts"));
 
@@ -444,8 +688,39 @@ fn spawn_ffmpeg(dir: &Path, input_args: &[String]) -> Option<Child> {
     // reactor running"), and fire-and-forget is all that's needed.
     let mut cmd = std::process::Command::new("ffmpeg");
     cmd.args(["-y", "-hide_banner", "-loglevel", "error"])
-        .args(input_args)
-        .args(["-framerate", "30"])
+        .args(&inputs.args)
+        .args(["-framerate", "30"]);
+
+    // Explicit stream mapping — with multiple live inputs, ffmpeg's default "best stream"
+    // selection is not what we want. Two audio tracks (mic + system loopback) get mixed into
+    // one; `normalize=0` keeps real volumes instead of halving both to guarantee headroom.
+    match inputs.audio_maps.as_slice() {
+        [] => {
+            cmd.args(["-map", "0:v"]);
+        }
+        [only] => {
+            cmd.args(["-map", "0:v", "-map", only]);
+        }
+        [first, second, ..] => {
+            // Each input is upconverted to 48kHz stereo BEFORE mixing — amix otherwise
+            // negotiates the lowest common format, and a 16kHz-mono headset mic would drag the
+            // game audio down with it (observed live).
+            cmd.args([
+                "-filter_complex",
+                &format!(
+                    "[{first}]aresample=48000,aformat=channel_layouts=stereo[a0];\
+                     [{second}]aresample=48000,aformat=channel_layouts=stereo[a1];\
+                     [a0][a1]amix=inputs=2:duration=longest:normalize=0[aout]"
+                ),
+                "-map",
+                "0:v",
+                "-map",
+                "[aout]",
+            ]);
+        }
+    }
+
+    cmd
         // Screen-capture inputs (avfoundation/gdigrab) report irregular timestamps, so libx264's
         // default keyframe-interval heuristic (frame-count based) doesn't land near real 10s
         // wall-clock boundaries — the segment muxer only cuts at keyframes, so without forcing
@@ -551,6 +826,12 @@ pub fn ensure_capture(app: &AppHandle, exe_name: Option<&str>) {
                     (false, false)
                 }
             }
+            _ if slot.restart_requested => {
+                // Deliberate kill (mic setting changed) — not an audio-input failure, and the
+                // old footage has a different stream layout than the new spawn will produce.
+                slot.restart_requested = false;
+                (true, true)
+            }
             _ => {
                 slot.respawn_strikes = slot.respawn_strikes.saturating_add(1);
                 if slot.respawn_strikes == 2 {
@@ -578,14 +859,22 @@ pub fn ensure_capture(app: &AppHandle, exe_name: Option<&str>) {
         }
 
         let exe = slot.exe_name.clone();
-        let with_audio = slot.respawn_strikes < 2;
-        let Some((input_args, window_scoped)) = capture_input_args(exe.as_deref(), with_audio)
+        let mic_enabled = {
+            let db = app.state::<DbState>();
+            db.0.lock().ok().map(|conn| read_mic_enabled(&conn)).unwrap_or(true)
+        };
+        // After two capture deaths in a row, drop every audio input (mic AND loopback) — audio
+        // devices are the usual suspect for instant spawn failures.
+        let audio_healthy = slot.respawn_strikes < 2;
+        let Some(inputs) =
+            capture_input_args(exe.as_deref(), mic_enabled && audio_healthy, audio_healthy)
         else {
             eprintln!("clipper: no screen-capture input configured for this OS, buffer not started");
             slot.phase = None;
             return;
         };
-        match spawn_ffmpeg(&dir, &input_args) {
+        let window_scoped = inputs.window_scoped;
+        match spawn_ffmpeg(&dir, &inputs) {
             Some(child) => {
                 slot.generation += 1;
                 slot.phase = Some(Capture { child, window_scoped });
@@ -645,26 +934,6 @@ fn is_window_scoped(app: &AppHandle) -> bool {
     matches!(slot.phase, Some(Capture { window_scoped: true, .. }))
 }
 
-/// Native notification. macOS delivers via `osascript` because Notification Center silently
-/// ignores unbundled dev binaries — permission reads Granted and the plugin's `.show()` returns
-/// Ok, but nothing ever appears (observed live; a known limitation of non-bundled apps). The
-/// packaged app and Windows use the notification plugin normally.
-async fn notify(app: &AppHandle, title: &str, body: &str) {
-    if cfg!(target_os = "macos") {
-        // {:?} produces a double-quoted, escaped string — valid AppleScript string syntax.
-        let script = format!("display notification {body:?} with title {title:?}");
-        let _ = tokio::process::Command::new("osascript")
-            .args(["-e", &script])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await;
-    } else if let Err(e) = app.notification().builder().title(title).body(body).show() {
-        eprintln!("clipper: could not show notification: {e}");
-    }
-}
-
 fn read_clip_seconds(conn: &rusqlite::Connection) -> u32 {
     conn.query_row(
         "SELECT value FROM settings WHERE key = ?1",
@@ -694,6 +963,55 @@ pub fn set_clip_seconds(db: tauri::State<DbState>, seconds: u32) -> Result<(), S
         rusqlite::params![CLIP_SECONDS_SETTING_KEY, seconds.to_string()],
     )
     .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn read_mic_enabled(conn: &rusqlite::Connection) -> bool {
+    conn.query_row(
+        "SELECT value FROM settings WHERE key = ?1",
+        [MIC_ENABLED_SETTING_KEY],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .map(|v| v != "0")
+    .unwrap_or(true)
+}
+
+#[tauri::command]
+pub fn get_mic_enabled(db: tauri::State<DbState>) -> Result<bool, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    Ok(read_mic_enabled(&conn))
+}
+
+#[tauri::command]
+pub fn set_mic_enabled(
+    app: AppHandle,
+    db: tauri::State<DbState>,
+    enabled: bool,
+) -> Result<(), String> {
+    {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![MIC_ENABLED_SETTING_KEY, if enabled { "1" } else { "0" }],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    // Apply immediately to a live capture: kill it and let the tracker's next poll (≤5s)
+    // respawn it with the new setting — the setting is only read at spawn time, and live
+    // testing showed a toggle that silently doesn't apply until the next game session reads as
+    // broken. `restart_requested` keeps the watchdog from counting this as an audio failure.
+    let state = app.state::<CaptureState>();
+    let mut slot = state.0.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.phase.is_some() {
+        slot.restart_requested = true;
+    }
+    if let Some(capture) = slot.phase.as_mut() {
+        let _ = capture.child.kill();
+    }
     Ok(())
 }
 
@@ -806,15 +1124,15 @@ fn currently_playing_game(conn: &rusqlite::Connection) -> Option<(i64, String)> 
 /// (still-being-written) segment IS included — TS is readable mid-write, and it holds the
 /// footage from right before the hotkey press.
 ///
-/// Selection accumulates each segment's REAL covered duration (its file birth→modified span)
-/// rather than assuming a fixed 10s per file, so crash-restart partials don't skew the math.
-/// Falls back to whatever exists if the buffer hasn't filled that far yet (e.g. right after a
-/// game launches).
-/// Returned by `recent_segments`: the files plus the precise wall-clock window they cover —
-/// taken straight from the oldest file's birth time and the newest file's mtime, NOT from
-/// summing per-file spans. Sums of truncated spans drifted several seconds, which shifted the
-/// save-time black-out mask onto the wrong footage (post-refocus gameplay got blacked while the
-/// tab-out itself leaked through).
+/// Selection accumulates each segment's real covered duration from mtime deltas between
+/// consecutive files rather than assuming a fixed 10s per file, so partial segments don't skew
+/// the math. Falls back to whatever exists if the buffer hasn't filled that far yet (e.g. right
+/// after a game launches).
+/// Returned by `recent_segments`: the files plus the wall-clock window they cover, anchored on
+/// the newest file's mtime and summed per-file spans. Both the `-ss` output cut and the focus-
+/// mask timeline are computed against this window, so it must reflect the footage that's
+/// actually in the files — see the comments inside `recent_segments` for the two timestamp
+/// traps (recycled birth times, capture-death holes) that previously broke it.
 struct SelectedSegments {
     files: Vec<PathBuf>,
     wall_start: std::time::SystemTime,
@@ -822,66 +1140,77 @@ struct SelectedSegments {
 }
 
 fn recent_segments(dir: &PathBuf, seconds: u32) -> Result<SelectedSegments, String> {
-    let mut entries: Vec<(std::time::SystemTime, std::time::SystemTime, PathBuf)> =
-        std::fs::read_dir(dir)
-            .map_err(|e| e.to_string())?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().is_some_and(|ext| ext == "ts"))
-            .filter_map(|e| {
-                let meta = e.metadata().ok()?;
-                // A spawn that dies instantly (e.g. respawn racing the killed process's device
-                // release — the watchdog heals it seconds later) leaves a 0-byte segment behind,
-                // and ffmpeg's concat demuxer hard-fails on empty inputs.
-                if meta.len() == 0 {
-                    return None;
-                }
-                let modified = meta.modified().ok()?;
-                let born = meta.created().ok().unwrap_or_else(|| {
-                    modified
-                        .checked_sub(std::time::Duration::from_secs(SEGMENT_SECONDS as u64))
-                        .unwrap_or(modified)
-                });
-                Some((born, modified, e.path()))
-            })
-            .collect();
-    entries.sort_by_key(|(_, modified, _)| *modified);
+    // Only mtimes — NEVER file creation times. `-segment_wrap` recycles segment files in place,
+    // and an overwritten file keeps its original birth time on macOS, so once the ring wraps
+    // (~3 min into a session) birth-based math thought a 10s segment spanned minutes. That
+    // inflated `total_secs`, pushed the output `-ss` seek past the end of the real footage, and
+    // produced the "unplayable 262-byte clip" failures live testing hit after longer sessions.
+    let mut entries: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "ts"))
+        .filter_map(|e| {
+            let meta = e.metadata().ok()?;
+            // A spawn that dies instantly (e.g. respawn racing the killed process's device
+            // release — the watchdog heals it seconds later) leaves a 0-byte segment behind,
+            // and ffmpeg's concat demuxer hard-fails on empty inputs.
+            if meta.len() == 0 {
+                return None;
+            }
+            Some((meta.modified().ok()?, e.path()))
+        })
+        .collect();
+    entries.sort_by_key(|(modified, _)| *modified);
 
     if entries.is_empty() {
         return Err("No footage captured yet — the buffer needs a few seconds to fill.".into());
     }
 
-    let mut covered: u64 = 0;
-    let mut picked: Vec<(std::time::SystemTime, std::time::SystemTime, PathBuf)> = Vec::new();
-    for (born, modified, path) in entries.into_iter().rev() {
-        picked.push((born, modified, path));
-        let span = modified
-            .duration_since(born)
-            .map(|d| d.as_secs())
-            .unwrap_or(SEGMENT_SECONDS as u64)
-            .clamp(1, SEGMENT_SECONDS as u64);
-        covered += span;
-        if covered >= seconds as u64 {
+    // Each segment's covered duration is the mtime DELTA to its predecessor (a segment's mtime
+    // is when its last frame was written, its predecessor's mtime is when its first frame was) —
+    // capped at the nominal segment length. A delta far beyond the nominal length means a hole
+    // in the footage (capture died and was respawned): selection stops there, because concat
+    // splices across the hole and every wall-clock-anchored calculation (the `-ss` cut, the
+    // focus-mask timeline) would silently shift by the hole's width for everything before it.
+    const GAP_SECS: f64 = SEGMENT_SECONDS as f64 + 8.0;
+
+    let wall_end = entries.last().map(|(m, _)| *m).unwrap_or_else(std::time::SystemTime::now);
+
+    let mut total_secs: f64 = 0.0;
+    let mut picked: Vec<PathBuf> = Vec::new();
+    for window in entries.windows(2).rev() {
+        let (prev_mtime, _) = &window[0];
+        let (mtime, path) = &window[1];
+        let delta = mtime
+            .duration_since(*prev_mtime)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(SEGMENT_SECONDS as f64);
+        if delta > GAP_SECS {
+            break;
+        }
+        picked.push(path.clone());
+        total_secs += delta.min(SEGMENT_SECONDS as f64);
+        if total_secs >= seconds as f64 {
             break;
         }
     }
+    // The oldest file in the buffer has no predecessor to diff against — assume a full segment.
+    if total_secs < seconds as f64 && picked.len() == entries.len() - 1 {
+        picked.push(entries[0].1.clone());
+        total_secs += SEGMENT_SECONDS as f64;
+    }
+    if picked.is_empty() {
+        // Single file in the buffer (capture just started) — take it as-is.
+        picked.push(entries[0].1.clone());
+        total_secs = SEGMENT_SECONDS as f64;
+    }
     picked.reverse();
 
-    // Precise window from the file timestamps themselves (fractional; no per-file truncation).
-    let wall_start = picked.first().map(|(born, _, _)| *born).unwrap_or_else(std::time::SystemTime::now);
-    let wall_end = picked
-        .last()
-        .map(|(_, modified, _)| *modified)
-        .unwrap_or_else(std::time::SystemTime::now);
-    let total_secs = wall_end
-        .duration_since(wall_start)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(covered as f64);
+    let wall_start = wall_end
+        .checked_sub(std::time::Duration::from_secs_f64(total_secs))
+        .unwrap_or(wall_end);
 
-    Ok(SelectedSegments {
-        files: picked.into_iter().map(|(_, _, p)| p).collect(),
-        wall_start,
-        total_secs,
-    })
+    Ok(SelectedSegments { files: picked, wall_start, total_secs })
 }
 
 /// Reads the real duration of a finished clip by parsing `Duration: HH:MM:SS.cc` from
@@ -962,9 +1291,54 @@ fn blackout_enable_expr(
     Some(expr)
 }
 
+/// Parses the capture's pixel dimensions from `ffmpeg -i`'s stream metadata for a segment file
+/// (same trick as `probe_duration_seconds`). Needed to map the game window's point-space bounds
+/// onto capture pixels for the save-time crop.
+async fn probe_dimensions(path: &Path) -> Option<(u32, u32)> {
+    let output = tokio::process::Command::new("ffmpeg")
+        .arg("-i")
+        .arg(path)
+        .args(["-hide_banner"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let line = stderr.lines().find(|l| l.contains(" Video:"))?;
+    // The dimensions token looks like "2560x1664" among comma-separated stream parameters. The
+    // minimum-size check matters: the codec-tag token ("0x31637661") appears earlier in the
+    // line and would otherwise parse as 0×31637661.
+    line.split(&[',', ' '][..]).find_map(|tok| {
+        let (w, h) = tok.split_once('x')?;
+        let (w, h): (u32, u32) =
+            (w.parse().ok()?, h.trim_end_matches(|c: char| !c.is_ascii_digit()).parse().ok()?);
+        (w >= 16 && h >= 16 && h < 20000).then_some((w, h))
+    })
+}
+
+/// The exe name of the game the current capture is for — used by the save-time window crop.
+fn current_exe_name(app: &AppHandle) -> Option<String> {
+    let state = app.state::<CaptureState>();
+    let slot = state.0.lock().unwrap_or_else(|e| e.into_inner());
+    slot.exe_name.clone()
+}
+
+/// The bundled "Tabbed out" overlay image (vignette + label, pre-rendered because ffmpeg's
+/// `drawtext` filter isn't reliably compiled in — the Homebrew build hard-fails on it). `None`
+/// (resource missing) degrades to a flat black mask rather than failing the save.
+fn tabbed_out_overlay(app: &AppHandle) -> Option<PathBuf> {
+    use tauri::path::BaseDirectory;
+    app.path()
+        .resolve("resources/tabbed_out.png", BaseDirectory::Resource)
+        .ok()
+        .filter(|p| p.exists())
+}
+
 /// Cuts the trailing `seconds` of the rolling buffer into a standalone clip file and rolls a
 /// `clips` row for it, best-effort attached to whichever game is currently being tracked.
-/// Extracts a thumbnail for the Clips grid, and fires a native OS notification on success.
+/// Extracts a thumbnail for the Clips grid; progress/success feedback shows via the in-game
+/// overlay toast (see overlay.rs).
 #[tauri::command]
 pub async fn save_clip(
     app: AppHandle,
@@ -984,6 +1358,11 @@ pub async fn save_clip(
             read_clip_seconds(&conn)
         }
     };
+
+    // Fired before the (multi-second) re-encode below so the player gets immediate feedback
+    // that the hotkey registered — the overlay toast then updates in place to saved/failed.
+    crate::overlay::toast(&app, "saving", format!("Saving the last {seconds}s…"));
+    let _ = app.emit("clip-saving", seconds);
 
     let dir = buffer_dir(&app);
     let selected = recent_segments(&dir, seconds)?;
@@ -1006,18 +1385,28 @@ pub async fn save_clip(
         .join("\n");
     std::fs::write(&list_path, list_contents).map_err(|e| e.to_string())?;
 
+    // Crop the output down to just the game's window (macOS only — Windows' window-scoped
+    // capture already contains nothing else). The window's current bounds at save time are used
+    // for the whole clip; a window dragged mid-clip will show slightly offset early footage,
+    // which is the accepted tradeoff for never recording desktop pixels around the game.
+    let crop = match probe_dimensions(&segments[0]).await {
+        Some((w, h)) if !is_window_scoped(&app) => current_exe_name(&app)
+            .and_then(|exe| crop_filter_for_game_window(&exe, w, h))
+            .map(|c| format!("{c},"))
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
+
     // Mask unfocused spans in the OUTPUT (never needed for a window-scoped capture, which only
     // ever contains the game's own window). The filter timeline runs before the output-side
-    // `-ss` cut, so range times are concat times, not output times.
-    let filter = match (!is_window_scoped(&app))
+    // `-ss` cut, so range times are concat times, not output times. The mask is the bundled
+    // "Tabbed out" vignette image scaled to the frame — an image overlay costs nothing per
+    // frame, unlike the per-pixel `geq` gradient it replaced, which pushed a 30s save from ~3s
+    // to ~10s at Retina resolutions.
+    let mask_expr = (!is_window_scoped(&app))
         .then(|| blackout_enable_expr(&app, selected.wall_start, selected.total_secs))
-        .flatten()
-    {
-        Some(expr) => {
-            format!("drawbox=x=0:y=0:w=iw:h=ih:t=fill:color=black:enable='{expr}',fps=30")
-        }
-        None => "fps=30".to_string(),
-    };
+        .flatten();
+    let overlay_png = mask_expr.as_ref().and_then(|_| tabbed_out_overlay(&app));
 
     // The selection covers AT LEAST the requested length (whole segments); `-ss`/`-t` on the
     // output cut it to exactly the requested trailing window — clips used to drift 24-40s for a
@@ -1026,13 +1415,41 @@ pub async fn save_clip(
     // it makes the output robust to any stream-parameter drift between spawns. ~2-4s for a 30s
     // clip at veryfast; every mainstream clipping tool re-encodes on save.
     let skip_secs = (selected.total_secs - seconds as f64).max(0.0);
-    let concat_output = tokio::process::Command::new("ffmpeg")
-        .args(["-y", "-hide_banner", "-loglevel", "error"])
+    let mut cmd = tokio::process::Command::new("ffmpeg");
+    cmd.args(["-y", "-hide_banner", "-loglevel", "error"])
         .args(["-fflags", "+genpts"])
         .args(["-f", "concat", "-safe", "0"])
         .arg("-i")
-        .arg(&list_path)
-        .args(["-vf", &filter])
+        .arg(&list_path);
+    match (&mask_expr, &overlay_png) {
+        // Vignette overlay: scale the image to the (cropped) frame via scale2ref, then overlay
+        // it only during masked ranges. Needs -filter_complex for the second input, which in
+        // turn needs explicit -map ("0:a?" keeps the mic track when the buffer has one).
+        (Some(expr), Some(png)) => {
+            cmd.arg("-i").arg(png).args([
+                "-filter_complex",
+                &format!(
+                    "[0:v]{crop}fps=30[base];[1:v][base]scale2ref=w=iw:h=ih[ov][b];\
+                     [b][ov]overlay=0:0:enable='{expr}'[v]"
+                ),
+                "-map",
+                "[v]",
+                "-map",
+                "0:a?",
+            ]);
+        }
+        // Overlay image missing — flat black fill, still masked correctly.
+        (Some(expr), None) => {
+            cmd.args([
+                "-vf",
+                &format!("{crop}drawbox=x=0:y=0:w=iw:h=ih:t=fill:color=black:enable='{expr}',fps=30"),
+            ]);
+        }
+        _ => {
+            cmd.args(["-vf", &format!("{crop}fps=30")]);
+        }
+    }
+    let concat_output = cmd
         .args(["-ss", &format!("{skip_secs:.2}")])
         .args(["-t", &seconds.to_string()])
         .args(["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"])
@@ -1071,9 +1488,17 @@ pub async fn save_clip(
         .await;
     let thumbnail_path = thumb_path.exists().then(|| thumb_path.to_string_lossy().to_string());
 
+    // A zero-frame output is a failed save even when ffmpeg exits 0 — it happily writes an
+    // empty MP4 when the `-ss` seek lands past the end of the input. The duration math above is
+    // supposed to prevent that, but if it's ever wrong again, refuse to catalog the junk file as
+    // a "clip" (live testing produced unplayable 262-byte entries in the gallery this way).
     let duration_seconds = match probe_duration_seconds(&clip_path).await {
-        Some(d) => d,
-        None => (selected.total_secs.min(seconds as f64)) as i64,
+        Some(d) if d > 0 => d,
+        _ => {
+            let _ = std::fs::remove_file(&clip_path);
+            let _ = std::fs::remove_file(&thumb_path);
+            return Err("Clip came out empty — the capture buffer had no usable footage.".into());
+        }
     };
     let clip_path_str = clip_path.to_string_lossy().to_string();
 
@@ -1103,19 +1528,19 @@ pub async fn save_clip(
         load_clip(&conn, clip_id)?
     };
 
-    let notif_body = match &game_name {
-        Some(name) => format!("Saved the last {duration_seconds}s of {name}."),
-        None => format!("Saved the last {duration_seconds}s."),
+    let toast_text = match &game_name {
+        Some(name) => format!("Clip saved — last {duration_seconds}s of {name}"),
+        None => format!("Clip saved — last {duration_seconds}s"),
     };
-    notify(&app, "Clip saved", &notif_body).await;
+    crate::overlay::toast(&app, "saved", toast_text);
 
     let _ = app.emit("clip-saved", clip.clone());
     Ok(clip)
 }
 
 /// Runs `save_clip` from the global-shortcut handler, which isn't itself async — spawns onto the
-/// async runtime. Failures surface as a native notification (the player is in a game and can't
-/// see the app window) in addition to the `clip-save-failed` event for the Clips view.
+/// async runtime. Failures surface on the in-game overlay toast (the player is in a game and
+/// can't see the app window) in addition to the `clip-save-failed` event for the Clips view.
 pub fn save_clip_from_hotkey(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let db = app.state::<DbState>();
@@ -1123,7 +1548,7 @@ pub fn save_clip_from_hotkey(app: AppHandle) {
             Ok(_) => {}
             Err(e) => {
                 eprintln!("clipper: hotkey save failed: {e}");
-                notify(&app, "Clip not saved", &e).await;
+                crate::overlay::toast(&app, "failed", e.as_str());
                 let _ = app.emit("clip-save-failed", e);
             }
         }

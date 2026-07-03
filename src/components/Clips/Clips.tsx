@@ -49,6 +49,8 @@ export function Clips() {
   }, []);
 
   useEffect(() => {
+    // Save progress/success feedback lives on the in-game overlay toast (OverlayToast.tsx) —
+    // this view only refreshes the gallery and surfaces failure detail inline.
     const unlistenSaved = listen("clip-saved", () => loadClips());
     const unlistenFailed = listen<string>("clip-save-failed", (event) => {
       setError(event.payload);

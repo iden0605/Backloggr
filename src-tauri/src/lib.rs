@@ -1,6 +1,7 @@
 mod clipper;
 mod commands;
 mod db;
+mod overlay;
 mod rawg;
 mod tracker;
 
@@ -10,7 +11,6 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use tauri::Manager;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
-use tauri_plugin_notification::NotificationExt;
 
 // Default "save the last N seconds" hotkey — hardcoded for now, same pattern as the RAWG key /
 // worker URL, until Settings (Stage 8) grows a real capture-settings section to make it
@@ -62,10 +62,11 @@ pub fn run() {
             if let Err(e) = app.global_shortcut().register(CLIP_HOTKEY) {
                 eprintln!("clipper: failed to register hotkey {CLIP_HOTKEY}: {e}");
             }
-            match app.notification().request_permission() {
-                Ok(state) => eprintln!("clipper: notification permission: {state:?}"),
-                Err(e) => eprintln!("clipper: failed to request notification permission: {e}"),
-            }
+            // Clip feedback shows through the in-game overlay window, not OS notifications —
+            // macOS suppresses notification banners while a fullscreen app is frontmost, which
+            // is precisely when clips get saved. Created here (hidden) because window creation
+            // must happen on the main thread; toasts fire from the hotkey's async context.
+            overlay::init(app.handle());
 
             Ok(())
         })
@@ -86,7 +87,9 @@ pub fn run() {
             clipper::delete_clip,
             clipper::save_clip,
             clipper::get_clip_seconds,
-            clipper::set_clip_seconds
+            clipper::set_clip_seconds,
+            clipper::get_mic_enabled,
+            clipper::set_mic_enabled
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

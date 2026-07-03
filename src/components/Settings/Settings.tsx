@@ -6,12 +6,16 @@ const MAX_CLIP_SECONDS = 120;
 
 export function Settings() {
   const [clipSeconds, setClipSeconds] = useState<number | null>(null);
+  const [micEnabled, setMicEnabled] = useState<boolean | null>(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     invoke<number>("get_clip_seconds")
       .then(setClipSeconds)
+      .catch((err) => setError(String(err)));
+    invoke<boolean>("get_mic_enabled")
+      .then(setMicEnabled)
       .catch((err) => setError(String(err)));
   }, []);
 
@@ -24,6 +28,18 @@ export function Settings() {
       setTimeout(() => setSaved(false), 1500);
     } catch (err) {
       setError(String(err));
+    }
+  }
+
+  async function toggleMic() {
+    if (micEnabled === null) return;
+    const next = !micEnabled;
+    setMicEnabled(next);
+    try {
+      await invoke("set_mic_enabled", { enabled: next });
+    } catch (err) {
+      setError(String(err));
+      setMicEnabled(!next);
     }
   }
 
@@ -61,6 +77,31 @@ export function Settings() {
               <span className="text-xs text-text-lo">sec</span>
               {saved && <span className="text-xs text-success">Saved</span>}
             </div>
+          )}
+        </div>
+
+        <div className="mt-4 flex items-center justify-between gap-4 border-t border-border pt-4">
+          <div>
+            <p className="text-[13.5px] font-medium text-text-hi">Microphone</p>
+            <p className="mt-0.5 text-xs text-text-lo">
+              Record mic audio alongside clips. Captured continuously, even through tab-outs.
+            </p>
+          </div>
+          {micEnabled !== null && (
+            <button
+              onClick={toggleMic}
+              role="switch"
+              aria-checked={micEnabled}
+              className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+                micEnabled ? "bg-accent" : "bg-surface-alt"
+              }`}
+            >
+              <span
+                className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-bg transition-transform ${
+                  micEnabled ? "translate-x-5" : "translate-x-0"
+                }`}
+              />
+            </button>
           )}
         </div>
       </div>
