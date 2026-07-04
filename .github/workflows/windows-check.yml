@@ -27,5 +27,11 @@ jobs:
       - name: Create placeholder frontend dist
         run: mkdir dist
 
+      # Same story for the ffmpeg sidecar: tauri.windows.conf.json declares it via externalBin
+      # and tauri-build wants the file present at compile time — an empty placeholder satisfies
+      # the type-check (release.yml stages the real binary).
+      - name: Create placeholder ffmpeg sidecar
+        run: New-Item -Path src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe -ItemType File -Force
+
       - name: cargo check (Windows target)
         run: cargo check --manifest-path src-tauri/Cargo.toml

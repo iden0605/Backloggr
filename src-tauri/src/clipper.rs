@@ -45,6 +45,34 @@ const MAX_CLIP_SECONDS: u32 = 120;
 const CLIP_SECONDS_SETTING_KEY: &str = "clip_seconds";
 const MIC_ENABLED_SETTING_KEY: &str = "mic_enabled";
 
+/// Path to the ffmpeg binary: the bundled sidecar next to the app executable when one exists
+/// (installed Windows builds — `bundle.externalBin` in tauri.windows.conf.json puts it there, so
+/// end users never install ffmpeg themselves), falling back to a PATH lookup (dev builds, macOS).
+/// Resolved once — the install layout can't change mid-run.
+fn ffmpeg_path() -> &'static Path {
+    static PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
+            .filter(|sidecar| sidecar.exists())
+            .unwrap_or_else(|| PathBuf::from("ffmpeg"))
+    })
+}
+
+/// Format of raw PCM riding into the capture ffmpeg over stdin — the Windows WASAPI loopback
+/// path (see loopback.rs). Present on every platform so `CaptureInputs` construction stays
+/// cfg-free; only the Windows branch ever populates it.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[derive(Clone, Copy)]
+pub struct PipeAudioSpec {
+    pub sample_rate: u32,
+    pub channels: u16,
+    /// ffmpeg raw-PCM demuxer name ("f32le" / "s16le").
+    pub format: &'static str,
+}
+
 pub struct Capture {
     child: Child,
     /// Whether this capture is scoped to the game's own window (`gdigrab title=` on Windows). A
@@ -428,7 +456,7 @@ fn is_loopback_device_name(name: &str) -> bool {
 /// Windows-only: dshow audio device names, in listing order.
 #[cfg(target_os = "windows")]
 fn dshow_audio_devices() -> Vec<String> {
-    let Ok(output) = std::process::Command::new("ffmpeg")
+    let Ok(output) = std::process::Command::new(ffmpeg_path())
         .args(["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -472,7 +500,7 @@ fn dshow_mic_device(devices: &[String]) -> Option<String> {
 /// BlackHole in live testing.
 #[cfg(target_os = "macos")]
 fn avfoundation_devices() -> (Option<u32>, Option<u32>, Option<u32>) {
-    let Ok(output) = std::process::Command::new("ffmpeg")
+    let Ok(output) = std::process::Command::new(ffmpeg_path())
         .args(["-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -555,6 +583,9 @@ struct CaptureInputs {
     /// Stream specifiers ("0:a", "1:a", ...) of every audio track across the inputs. 0 = no
     /// audio; 1 = mapped straight through; 2 = mixed with `amix` (mic + system loopback).
     audio_maps: Vec<String>,
+    /// Set when one of the inputs is raw PCM over stdin (Windows WASAPI loopback) —
+    /// `spawn_ffmpeg` then pipes stdin and hands it to `loopback::start`.
+    pipe_audio: Option<PipeAudioSpec>,
 }
 
 /// OS-specific capture inputs for ffmpeg. On Windows, video scopes to the tracked game's window
@@ -570,11 +601,12 @@ struct CaptureInputs {
 ///   recording it as the "mic" is guaranteed silence — observed live), in which case a real mic
 ///   is picked by name instead. Windows picks the most microphone-looking dshow device since
 ///   dshow has no default-device concept (and never a loopback, same guard).
-/// - GAME/system audio rides in via a loopback device whenever one is installed (BlackHole etc.
-///   on macOS, Stereo Mix/virtual-audio-capturer on Windows — see `is_loopback_device_name`),
-///   added unconditionally as its own input: an unrouted loopback just contributes silence.
-///   Neither OS can capture system audio with plain ffmpeg WITHOUT such a device; a native
-///   WASAPI-loopback path for Windows is a packaging-stage upgrade (task 16).
+/// - GAME/system audio: Windows captures the default OUTPUT device natively via WASAPI loopback
+///   (loopback.rs — zero setup, works with any headphones/speakers, PCM piped over stdin), with
+///   a dshow loopback device (Stereo Mix/virtual-audio-capturer) only as fallback when that
+///   can't open. macOS (dev-only) still needs an installed loopback device (BlackHole etc. — see
+///   `is_loopback_device_name`), added unconditionally as its own input: an unrouted loopback
+///   just contributes silence.
 ///
 /// See `CaptureSlot::respawn_strikes` for the fallback that drops ALL audio inputs if they keep
 /// killing the capture.
@@ -608,6 +640,7 @@ fn capture_input_args(
 
             let devices = dshow_audio_devices();
             let mut audio_maps = Vec::new();
+            let mut pipe_audio = None;
             let mut input_idx = 1;
             if with_mic {
                 if let Some(mic) = dshow_mic_device(&devices) {
@@ -617,12 +650,24 @@ fn capture_input_args(
                 }
             }
             if with_loopback {
-                if let Some(lb) = devices.iter().find(|d| is_loopback_device_name(d)) {
+                // Game/system audio: native WASAPI loopback first — captures the default output
+                // device directly (any headphones/speakers, zero setup, the way Medal/ShadowPlay
+                // do it), raw PCM piped into stdin by loopback.rs. A dshow loopback DEVICE is
+                // only the fallback for the rare machine where the WASAPI route can't open.
+                if let Some(spec) = crate::loopback::default_output_spec() {
+                    let (ar, ac) = (spec.sample_rate.to_string(), spec.channels.to_string());
+                    push_input(
+                        &mut args,
+                        &["-f", spec.format, "-ar", &ar, "-ac", &ac, "-i", "pipe:0"],
+                    );
+                    audio_maps.push(format!("{input_idx}:a"));
+                    pipe_audio = Some(spec);
+                } else if let Some(lb) = devices.iter().find(|d| is_loopback_device_name(d)) {
                     push_input(&mut args, &["-f", "dshow", "-i", &format!("audio={lb}")]);
                     audio_maps.push(format!("{input_idx}:a"));
                 }
             }
-            Some(CaptureInputs { args, window_scoped, audio_maps })
+            Some(CaptureInputs { args, window_scoped, audio_maps, pipe_audio })
         }
         #[cfg(not(target_os = "windows"))]
         None
@@ -675,7 +720,7 @@ fn capture_input_args(
                     audio_maps.push("1:a".into());
                 }
             }
-            Some(CaptureInputs { args, window_scoped: false, audio_maps })
+            Some(CaptureInputs { args, window_scoped: false, audio_maps, pipe_audio: None })
         }
         #[cfg(not(target_os = "macos"))]
         None
@@ -742,9 +787,8 @@ fn trim_buffer(dir: &Path) {
 /// spawn needs its own namespace.
 static SPAWN_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Spawns one rolling-buffer ffmpeg process writing into `dir`. Assumes `ffmpeg` is resolvable on
-/// PATH — bundling it as a Tauri sidecar binary is a packaging follow-up (release-workflow stage,
-/// task 16), not a capture-logic change.
+/// Spawns one rolling-buffer ffmpeg process writing into `dir`. Uses the bundled sidecar ffmpeg
+/// when present, PATH otherwise — see `ffmpeg_path`.
 fn spawn_ffmpeg(dir: &Path, inputs: &CaptureInputs) -> Option<Child> {
     let seq = SPAWN_SEQ.fetch_add(1, Ordering::SeqCst);
     let pattern = dir.join(format!("segment_{seq:05}_%03d.ts"));
@@ -752,7 +796,7 @@ fn spawn_ffmpeg(dir: &Path, inputs: &CaptureInputs) -> Option<Child> {
     // std::process, not tokio::process: this can run from sync contexts before any Tokio reactor
     // is guaranteed to exist (spawning a tokio::process::Child without one panics with "no
     // reactor running"), and fire-and-forget is all that's needed.
-    let mut cmd = std::process::Command::new("ffmpeg");
+    let mut cmd = std::process::Command::new(ffmpeg_path());
     cmd.args(["-y", "-hide_banner", "-loglevel", "error"])
         .args(&inputs.args)
         .args(["-framerate", "30"]);
@@ -804,19 +848,34 @@ fn spawn_ffmpeg(dir: &Path, inputs: &CaptureInputs) -> Option<Child> {
         .args(["-segment_wrap", &BUFFER_SEGMENTS.to_string()])
         .args(["-reset_timestamps", "1"])
         .arg(pattern)
-        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
+    // stdin carries the WASAPI loopback PCM when that input is in play (Windows); otherwise it
+    // stays closed so ffmpeg can't block reading it.
+    if inputs.pipe_audio.is_some() {
+        cmd.stdin(Stdio::piped());
+    } else {
+        cmd.stdin(Stdio::null());
+    }
+
     match cmd.spawn() {
-        Ok(child) => {
+        Ok(mut child) => {
+            // `pipe_audio` is only ever set on Windows; the loopback feed owns the pipe from
+            // here on and dies with the child (broken pipe) — nothing to store or join.
+            if let (Some(spec), Some(stdin)) = (inputs.pipe_audio, child.stdin.take()) {
+                #[cfg(target_os = "windows")]
+                crate::loopback::start(stdin, spec);
+                #[cfg(not(target_os = "windows"))]
+                drop((stdin, spec));
+            }
             // Recorded so a future life of this app can reap this ffmpeg if we die without
             // running our exit cleanup — see reap_orphan_capture.
             let _ = std::fs::write(capture_pid_file(dir), child.id().to_string());
             Some(child)
         }
         Err(e) => {
-            eprintln!("clipper: failed to start capture buffer (is ffmpeg on PATH?): {e}");
+            eprintln!("clipper: failed to start capture buffer (ffmpeg missing?): {e}");
             None
         }
     }
@@ -1283,7 +1342,7 @@ fn recent_segments(dir: &PathBuf, seconds: u32) -> Result<SelectedSegments, Stri
 /// `ffmpeg -i`'s metadata dump — the segment-count estimate can be off by up to a whole segment
 /// because the live segment is partial. Falls back to `None` (caller estimates) if parsing fails.
 async fn probe_duration_seconds(path: &Path) -> Option<i64> {
-    let output = tokio::process::Command::new("ffmpeg")
+    let output = tokio::process::Command::new(ffmpeg_path())
         .arg("-i")
         .arg(path)
         .args(["-hide_banner"])
@@ -1361,7 +1420,7 @@ fn blackout_enable_expr(
 /// (same trick as `probe_duration_seconds`). Needed to map the game window's point-space bounds
 /// onto capture pixels for the save-time crop.
 async fn probe_dimensions(path: &Path) -> Option<(u32, u32)> {
-    let output = tokio::process::Command::new("ffmpeg")
+    let output = tokio::process::Command::new(ffmpeg_path())
         .arg("-i")
         .arg(path)
         .args(["-hide_banner"])
@@ -1481,7 +1540,7 @@ pub async fn save_clip(
     // it makes the output robust to any stream-parameter drift between spawns. ~2-4s for a 30s
     // clip at veryfast; every mainstream clipping tool re-encodes on save.
     let skip_secs = (selected.total_secs - seconds as f64).max(0.0);
-    let mut cmd = tokio::process::Command::new("ffmpeg");
+    let mut cmd = tokio::process::Command::new(ffmpeg_path());
     cmd.args(["-y", "-hide_banner", "-loglevel", "error"])
         .args(["-fflags", "+genpts"])
         .args(["-f", "concat", "-safe", "0"])
@@ -1540,7 +1599,7 @@ pub async fn save_clip(
     }
 
     // Best-effort — a missing thumbnail shouldn't fail the whole save.
-    let _ = tokio::process::Command::new("ffmpeg")
+    let _ = tokio::process::Command::new(ffmpeg_path())
         .args(["-y", "-hide_banner", "-loglevel", "error"])
         .args(["-ss", "1"])
         .arg("-i")

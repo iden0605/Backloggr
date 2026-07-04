@@ -58,4 +58,7 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Threading",
 ] }
+# WASAPI loopback capture of the default output device (loopback.rs) — zero-setup game/system
+# audio in clips, no virtual loopback device needed.
+cpal = "0.15"
 

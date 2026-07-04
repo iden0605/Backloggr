@@ -1,6 +1,9 @@
 mod clipper;
 mod commands;
 mod db;
+// Native WASAPI system-audio capture for clips — Windows-only (macOS uses a loopback device).
+#[cfg(target_os = "windows")]
+mod loopback;
 mod overlay;
 mod rawg;
 mod tracker;
