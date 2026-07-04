@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { X } from "lucide-react";
+import { Link } from "react-router-dom";
+import { LibraryBig, X } from "lucide-react";
 import { useAppStore, Game, GameStatus } from "../../store/useAppStore";
 
 interface GameAutoAdded {
@@ -146,7 +147,22 @@ export function Backlog() {
       {error && <p className="mt-4 text-sm text-danger">{error}</p>}
 
       {games.length === 0 ? (
-        <p className="mt-8 text-sm text-text-lo">No games yet — add some from Search.</p>
+        <div className="mt-8 flex flex-col items-start gap-3 rounded-xl border border-dashed border-border p-8">
+          <LibraryBig className="h-8 w-8 text-text-lo/50" />
+          <div>
+            <p className="text-sm font-semibold text-text-hi">Your backlog is empty</p>
+            <p className="mt-1 text-[13.5px] text-text-lo">
+              Search for a game to add it, or just launch something you own — it'll show up here
+              automatically if it's installed via Steam, Epic, GOG, Battle.net, or Riot.
+            </p>
+          </div>
+          <Link
+            to="/search"
+            className="rounded-lg bg-accent px-3.5 py-2 text-xs font-semibold text-bg transition-colors hover:bg-accent-hover"
+          >
+            Search for a game
+          </Link>
+        </div>
       ) : (
         <div className="mt-7 space-y-9">
           {SECTIONS.map(({ status, label }) => {

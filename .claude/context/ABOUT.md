@@ -1,6 +1,6 @@
 # About
 
-_Last updated: 2026-07-04 (13b closed: overlay-over-fullscreen NSPanel fix live-confirmed, mic loopback-guard; task 14 implemented: system tray, close-to-tray, launch-on-startup — awaiting live test, see PLAN.md)_
+_Last updated: 2026-07-04 (task 15 in progress: shared `ErrorBoundary` wraps each route, Dashboard/Backlog got first-run empty-state + onboarding CTAs — see PLAN.md)_
 
 ## What It Is
 
@@ -36,7 +36,9 @@ src/components/   Layout (Sidebar, Shell — Aurora Teal palette, Fraunces/Instr
                   launch-on-startup toggle + close-to-tray note; Clips section: clip-length field
                   + mic on/off toggle; shared Toggle component; no worker-URL field, it's
                   hardcoded in Rust), Overlay/OverlayToast.tsx
-                  (renders inside the separate overlay window at #/overlay, not the app shell)
+                  (renders inside the separate overlay window at #/overlay, not the app shell),
+                  shared/ErrorBoundary.tsx (class component, wraps each route's page content in
+                  Shell.tsx so a render crash on one page doesn't blank the whole app)
 src/store/        useAppStore.ts — Zustand store (games list, currentlyPlaying)
 proxy/            Cloudflare Worker (Stage 5) — src/index.ts proxies chat turns to Groq's API,
                   deployed to a workers.dev subdomain via `wrangler deploy`
@@ -56,6 +58,7 @@ proxy/            Cloudflare Worker (Stage 5) — src/index.ts proxies chat turn
 | `src-tauri/src/tracker.rs` | `start(app)` spawns a tokio task (via `setup`) that: (1) runs `reconcile_dangling_sessions` once at startup to resolve sessions left open by an unclean previous shutdown (crash/force-quit/OS restart) — re-adopts still-running games, otherwise closes them out using the `last_seen_at` heartbeat and flags `ended_estimated`; (2) each poll, runs `detect_unregistered_games` + `auto_register_and_track` to auto-add and start tracking any game launched from a known storefront path (`steamapps/common`, Epic/GOG/Battle.net/Riot folders) that isn't in the backlog yet — the raw folder/exe name is run through `humanize_name` (splits camelCase/acronym/letter-digit boundaries, e.g. `"BloonsTD6"` → `"Bloons TD 6"`) before it's used as both the RAWG search query and the display-name fallback, since storefronts often use unspaced folder names that don't match RAWG's listed titles — best-effort enriched via RAWG (preferring an exact case-insensitive name match over just the first result), emitting `game-auto-added`; (3) polls `sysinfo` every 5s, matches running process names against `games.exe_name`, opens/closes `sessions` rows (writing a `last_seen_at` heartbeat on every poll of an active session) — on open, also flips `games.status` to `playing` unless it's `completed`/`dropped` (a deliberate user call that a relaunch shouldn't silently undo) — and emits `session-started`/`session-ended` events to the frontend; (4) after the DB lock drops each poll, calls `clipper::ensure_capture`/`clipper::stop` based on whether any session is active — capture lifecycle lives entirely in `clipper.rs`, tracker.rs just tells it "a session is/isn't open" |
 | `src/App.tsx` | React Router route table under the `Shell` layout, plus the shell-less `overlay` route rendered inside the separate overlay window |
 | `src/components/Overlay/OverlayToast.tsx` | Content of the overlay window: forces the page background transparent (the app stylesheet paints an opaque one), listens for `overlay-toast` events, renders the latest toast (spinner/check/x + text). The Rust side owns all show/hide/positioning. |
+| `src/components/shared/ErrorBoundary.tsx` | Class component (`getDerivedStateFromError`/`componentDidCatch`) rendering a fallback card (message + Reload button) on a render crash. `Layout/Shell.tsx` wraps `<Outlet />` in it, keyed by `location.pathname` so navigating away from a crashed page remounts and clears the boundary — one broken page can't blank the sidebar/nav or the rest of the app. |
 | `src/components/Layout/Sidebar.tsx` | Nav: Dashboard/Backlog/Search/Recommendations/Clips/Settings |
 | `src/store/useAppStore.ts` | `Game` type mirrors the `games` table; Zustand store for games + currentlyPlaying |
 | `src-tauri/tauri.conf.json` | Window sized 1200x800 (min 900x600), bundle targets `["msi","nsis","dmg"]`, `macOSPrivateApi: true` (overlay window transparency), `bundle.resources` ships `resources/tabbed_out.png` |

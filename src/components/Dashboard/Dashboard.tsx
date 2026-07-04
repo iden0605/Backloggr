@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { Link } from "react-router-dom";
+import { Compass } from "lucide-react";
 import {
   Bar,
   BarChart,
@@ -188,6 +190,42 @@ export function Dashboard() {
     day: formatDayLabel(d.date),
     hours: Math.round((d.totalSeconds / 3600) * 10) / 10,
   }));
+
+  // Heuristic first-run check: nothing tracked or completed and no active/backlog games —
+  // a brand-new install with an empty library. Guides the user to their first action instead
+  // of showing empty charts and zeroed stat cards.
+  const isFirstRun =
+    !currentlyPlaying &&
+    stats.totalPlaytimeSeconds === 0 &&
+    stats.gamesPlaying === 0 &&
+    stats.gamesInBacklog === 0 &&
+    stats.gamesCompleted === 0 &&
+    stats.gamesPlayed.length === 0;
+
+  if (isFirstRun) {
+    return (
+      <div>
+        <h1 className="page-title text-[26px]">Dashboard</h1>
+        <div className="mt-8 flex flex-col items-start gap-3 rounded-xl border border-dashed border-border p-8">
+          <Compass className="h-8 w-8 text-accent" />
+          <div>
+            <p className="text-sm font-semibold text-text-hi">Welcome to your game backlog</p>
+            <p className="mt-1 max-w-md text-[13.5px] text-text-lo">
+              Once you add a game and start playing, your playtime, stats, and trends will show up
+              here. Search for a game to add it, or just launch something you own from Steam,
+              Epic, GOG, Battle.net, or Riot — it'll be picked up automatically.
+            </p>
+          </div>
+          <Link
+            to="/search"
+            className="rounded-lg bg-accent px-3.5 py-2 text-xs font-semibold text-bg transition-colors hover:bg-accent-hover"
+          >
+            Search for a game
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>

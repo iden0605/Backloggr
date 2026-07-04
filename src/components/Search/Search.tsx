@@ -9,6 +9,7 @@ export function Search() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [addedIds, setAddedIds] = useState<Set<number>>(new Set());
+  const [hasSearched, setHasSearched] = useState(false);
 
   async function runSearch(e: React.FormEvent) {
     e.preventDefault();
@@ -18,6 +19,7 @@ export function Search() {
     try {
       const found = await invoke<RawgGameResult[]>("search_rawg", { query });
       setResults(found);
+      setHasSearched(true);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -87,6 +89,26 @@ export function Search() {
               }
             />
           ))}
+        </div>
+      )}
+
+      {!loading && !error && hasSearched && results.length === 0 && (
+        <div className="mt-8 rounded-2xl border border-dashed border-border py-14 text-center">
+          <SearchIcon className="mx-auto h-8 w-8 text-text-lo" />
+          <p className="mt-3 text-sm font-semibold text-text-hi">No games found</p>
+          <p className="mt-1 text-[13px] text-text-lo">
+            Try a different title or check the spelling.
+          </p>
+        </div>
+      )}
+
+      {!hasSearched && (
+        <div className="mt-8 rounded-2xl border border-dashed border-border py-14 text-center">
+          <SearchIcon className="mx-auto h-8 w-8 text-text-lo" />
+          <p className="mt-3 text-sm font-semibold text-text-hi">Search for a game</p>
+          <p className="mt-1 text-[13px] text-text-lo">
+            Look up a title to see cover art, genres, and add it to your backlog.
+          </p>
         </div>
       )}
     </div>
