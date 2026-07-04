@@ -12,8 +12,11 @@
 //
 // Limits shared with every non-injecting overlay: a game in EXCLUSIVE fullscreen on Windows
 // composites its own swapchain and won't show any OS window on top — borderless fullscreen (the
-// modern default) works. On macOS the window level + FullScreenAuxiliary collection behavior get
-// it above native fullscreen Spaces.
+// modern default) works. On macOS, floating over another app's fullscreen Space takes THREE
+// things together: a non-activating NSPanel (convert_to_panel — a plain NSWindow from an
+// inactive app won't render over a fullscreen Space at any level), the shielding+1 window level,
+// and the CanJoinAllSpaces|FullScreenAuxiliary collection behavior (elevate_above_fullscreen,
+// re-applied per toast because tao resets the level during show()).
 
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -67,7 +70,45 @@ pub fn init(app: &AppHandle) {
     // Click-through — the toast must never eat a mouse click aimed at the game under it.
     let _ = win.set_ignore_cursor_events(true);
     #[cfg(target_os = "macos")]
-    elevate_above_fullscreen(&win);
+    {
+        convert_to_panel(&win);
+        elevate_above_fullscreen(&win);
+    }
+}
+
+/// macOS: turn the overlay's NSWindow into a non-activating NSPanel. A plain NSWindow belonging
+/// to an inactive app won't render over another app's fullscreen Space no matter its level or
+/// collection behavior — panels are the sanctioned overlay window kind, and the class swap on a
+/// live window is the same trick tauri-nspanel ships (NSPanel adds no ivars over NSWindow;
+/// guarded by an instance-size check anyway).
+#[cfg(target_os = "macos")]
+fn convert_to_panel(win: &tauri::WebviewWindow) {
+    use objc::runtime::{Class, Object, NO, YES};
+    use objc::{msg_send, sel, sel_impl};
+    extern "C" {
+        fn object_setClass(obj: *mut Object, cls: *const Class) -> *const Class;
+        fn class_getInstanceSize(cls: *const Class) -> usize;
+    }
+    let Ok(ns) = win.ns_window() else { return };
+    let ns = ns as *mut Object;
+    let Some(panel_class) = Class::get("NSPanel") else { return };
+    unsafe {
+        let current_class: *const Class = msg_send![ns, class];
+        if class_getInstanceSize(current_class) != class_getInstanceSize(panel_class as *const Class) {
+            eprintln!("overlay: window class instance size differs from NSPanel, skipping panel conversion");
+            return;
+        }
+        object_setClass(ns, panel_class);
+        // Non-activating: showing the panel must never activate this app, which would kick the
+        // game out of fullscreen / steal its input. NSWindowStyleMaskNonactivatingPanel = 1 << 7.
+        let style: u64 = msg_send![ns, styleMask];
+        let _: () = msg_send![ns, setStyleMask: style | (1u64 << 7)];
+        // NSPanel's default is to hide whenever its app deactivates — and this app is never
+        // active while a game runs. Without this the panel can never appear in-game at all.
+        let _: () = msg_send![ns, setHidesOnDeactivate: NO];
+        let _: () = msg_send![ns, setBecomesKeyOnlyIfNeeded: YES];
+        let _: () = msg_send![ns, setWorksWhenModal: YES];
+    }
 }
 
 /// macOS: raise the NSWindow's level above everything — including the shielding level games use
@@ -94,11 +135,25 @@ fn elevate_above_fullscreen(win: &tauri::WebviewWindow) {
     unsafe {
         let level = CGShieldingWindowLevel() as i64 + 1;
         let _: () = msg_send![ns, setLevel: level];
-        // NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary
-        let behavior: u64 = (1 << 0) | (1 << 8);
+        // NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorStationary
+        // | NSWindowCollectionBehaviorFullScreenAuxiliary
+        let behavior: u64 = (1 << 0) | (1 << 4) | (1 << 8);
         let _: () = msg_send![ns, setCollectionBehavior: behavior];
         // Frontmost without focusing/activating — the game must keep input.
         let _: () = msg_send![ns, orderFrontRegardless];
+
+        // Diagnostics for the fullscreen-Steam-game bug: read back what actually stuck. If the
+        // toast is still invisible in-game, these lines say whether something re-reset the level
+        // or the panel never joined the game's Space (isOnActiveSpace=NO).
+        let applied_level: i64 = msg_send![ns, level];
+        let applied_behavior: u64 = msg_send![ns, collectionBehavior];
+        let visible: objc::runtime::BOOL = msg_send![ns, isVisible];
+        let on_active_space: objc::runtime::BOOL = msg_send![ns, isOnActiveSpace];
+        eprintln!(
+            "overlay: level={applied_level} (target {level}) behavior={applied_behavior:#x} visible={} onActiveSpace={}",
+            visible != objc::runtime::NO,
+            on_active_space != objc::runtime::NO
+        );
     }
 }
 

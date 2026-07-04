@@ -4,6 +4,7 @@ mod db;
 mod overlay;
 mod rawg;
 mod tracker;
+mod tray;
 
 use clipper::{CaptureSlot, CaptureState, FocusLog};
 use db::DbState;
@@ -26,10 +27,17 @@ pub fn run() {
         // that ignores the first instance's pause/scope decisions. (Observed for real when dev
         // rebuilds left zombie instances recording the whole screen nonstop.)
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_focus();
-            }
+            // show() as well as focus: with background mode the window may be hidden, and a
+            // relaunch is the user saying "open the app".
+            tray::show_main_window(app);
         }))
+        // Launch-on-startup (Settings toggle → commands.rs get/set_autostart_enabled). Autostart
+        // launches pass --hidden so the app boots straight to the tray: the whole point of
+        // starting with the OS is background tracking, not a window over the desktop at login.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--hidden"]),
+        ))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
@@ -68,7 +76,29 @@ pub fn run() {
             // must happen on the main thread; toasts fire from the hotkey's async context.
             overlay::init(app.handle());
 
+            if let Err(e) = tray::init(app.handle()) {
+                eprintln!("tray: failed to create tray icon: {e}");
+            }
+            // Autostart launches pass --hidden (see the autostart plugin registration): start in
+            // the tray, tracking in the background, without flashing a window at login.
+            if std::env::args().any(|arg| arg == "--hidden") {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
+
             Ok(())
+        })
+        // Background mode: closing the main window hides it to the tray instead of quitting, so
+        // playtime tracking and the clip hotkey keep working. Actually quitting goes through the
+        // tray menu's Quit (app.exit → RunEvent::Exit → clipper::stop).
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_backlog,
@@ -89,13 +119,20 @@ pub fn run() {
             clipper::get_clip_seconds,
             clipper::set_clip_seconds,
             clipper::get_mic_enabled,
-            clipper::set_mic_enabled
+            clipper::set_mic_enabled,
+            commands::get_autostart_enabled,
+            commands::set_autostart_enabled
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
-            if let tauri::RunEvent::Exit = event {
-                clipper::stop(app_handle);
+            match event {
+                tauri::RunEvent::Exit => clipper::stop(app_handle),
+                // macOS: clicking the Dock icon while the window is hidden-to-tray must bring it
+                // back — without this the Dock click does nothing and the app looks hung.
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen { .. } => tray::show_main_window(app_handle),
+                _ => {}
             }
         });
 }

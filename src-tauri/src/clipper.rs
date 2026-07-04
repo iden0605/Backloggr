@@ -464,19 +464,21 @@ fn dshow_mic_device(devices: &[String]) -> Option<String> {
 }
 
 /// macOS: device indexes parsed fresh from ffmpeg's avfoundation listing (stderr) — the screen
-/// video device ("Capture screen 0") and, when one is installed, a system-audio loopback device
-/// (BlackHole etc., see `is_loopback_device_name`). Indexes must be parsed per spawn: connected
-/// devices (iPhone, headsets) shift them, which is exactly how a hardcoded mic index silently
-/// became BlackHole in live testing.
+/// video device ("Capture screen 0"), a system-audio loopback device when one is installed
+/// (BlackHole etc., see `is_loopback_device_name`), and a real (non-loopback) microphone,
+/// preferring one that names itself a mic — the fallback for when the system-default input IS a
+/// loopback (see `capture_input_args`). Indexes must be parsed per spawn: connected devices
+/// (iPhone, headsets) shift them, which is exactly how a hardcoded mic index silently became
+/// BlackHole in live testing.
 #[cfg(target_os = "macos")]
-fn avfoundation_devices() -> (Option<u32>, Option<u32>) {
+fn avfoundation_devices() -> (Option<u32>, Option<u32>, Option<u32>) {
     let Ok(output) = std::process::Command::new("ffmpeg")
         .args(["-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .output()
     else {
-        return (None, None);
+        return (None, None, None);
     };
     let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -490,6 +492,7 @@ fn avfoundation_devices() -> (Option<u32>, Option<u32>) {
     }
 
     let (mut screen, mut loopback) = (None, None);
+    let mut real_mics: Vec<(u32, String)> = Vec::new();
     let mut in_audio_section = false;
     for line in stderr.lines() {
         if line.contains("AVFoundation audio devices") {
@@ -500,11 +503,47 @@ fn avfoundation_devices() -> (Option<u32>, Option<u32>) {
         if !in_audio_section && name.starts_with("Capture screen") && screen.is_none() {
             screen = Some(idx);
         }
-        if in_audio_section && is_loopback_device_name(name) && loopback.is_none() {
-            loopback = Some(idx);
+        if in_audio_section {
+            if is_loopback_device_name(name) {
+                if loopback.is_none() {
+                    loopback = Some(idx);
+                }
+            } else {
+                real_mics.push((idx, name.to_string()));
+            }
         }
     }
-    (screen, loopback)
+    let mic = real_mics
+        .iter()
+        .find(|(_, name)| name.to_lowercase().contains("mic"))
+        .or_else(|| real_mics.first())
+        .map(|(idx, _)| *idx);
+    (screen, loopback, mic)
+}
+
+/// macOS: name of the system-default audio INPUT device — the one avfoundation's `default`
+/// keyword resolves to — parsed from `system_profiler SPAudioDataType`. `None` when it can't be
+/// determined (callers should then trust `default` as before).
+#[cfg(target_os = "macos")]
+fn macos_default_input_name() -> Option<String> {
+    let output = std::process::Command::new("system_profiler")
+        .arg("SPAudioDataType")
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    // Each device is a "Device Name:" header line followed by "Key: Value" property lines;
+    // headers end with ':' and property lines contain ": ".
+    let mut current_device: Option<&str> = None;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.ends_with(':') && !trimmed.contains(": ") {
+            current_device = Some(trimmed.trim_end_matches(':'));
+        } else if trimmed == "Default Input Device: Yes" {
+            return current_device.map(str::to_string);
+        }
+    }
+    None
 }
 
 /// Everything `spawn_ffmpeg` needs to know about the capture inputs.
@@ -526,8 +565,11 @@ struct CaptureInputs {
 ///
 /// Audio (all captured through tab-outs — only the video gets masked at save time):
 /// - `with_mic`: the user's microphone. macOS uses avfoundation's `default` keyword (follows the
-///   system-default input — built-in, headset, whatever the user actively uses); Windows picks
-///   the most microphone-looking dshow device since dshow has no default-device concept.
+///   system-default input — built-in, headset, whatever the user actively uses) — UNLESS the
+///   default input is itself a loopback device (BlackHole's install can leave it as default, and
+///   recording it as the "mic" is guaranteed silence — observed live), in which case a real mic
+///   is picked by name instead. Windows picks the most microphone-looking dshow device since
+///   dshow has no default-device concept (and never a loopback, same guard).
 /// - GAME/system audio rides in via a loopback device whenever one is installed (BlackHole etc.
 ///   on macOS, Stereo Mix/virtual-audio-capturer on Windows — see `is_loopback_device_name`),
 ///   added unconditionally as its own input: an unrouted loopback just contributes silence.
@@ -587,18 +629,42 @@ fn capture_input_args(
     } else if cfg!(target_os = "macos") {
         #[cfg(target_os = "macos")]
         {
-            let (screen, loopback) = avfoundation_devices();
+            let (screen, loopback, real_mic) = avfoundation_devices();
             let screen = screen.unwrap_or(2);
             let mut args = Vec::new();
             let mut audio_maps = Vec::new();
-            // Screen + mic ride in one avfoundation input ("video:audio").
-            let input = if with_mic {
-                format!("{screen}:default")
+            // Mic selector: normally avfoundation's `default` keyword, but never a loopback —
+            // if the system-default input IS one (BlackHole set itself as default input in live
+            // testing), `default` would record guaranteed silence, so fall back to a real mic
+            // by index; no real mic installed means no mic track at all.
+            let mic_selector = if with_mic {
+                match macos_default_input_name() {
+                    Some(name) if is_loopback_device_name(&name) => match real_mic {
+                        Some(idx) => {
+                            eprintln!(
+                                "clipper: default input '{name}' is a loopback — using real mic [{idx}] instead"
+                            );
+                            Some(idx.to_string())
+                        }
+                        None => {
+                            eprintln!(
+                                "clipper: default input '{name}' is a loopback and no real mic exists — skipping mic"
+                            );
+                            None
+                        }
+                    },
+                    _ => Some("default".to_string()),
+                }
             } else {
-                format!("{screen}:none")
+                None
+            };
+            // Screen + mic ride in one avfoundation input ("video:audio").
+            let input = match &mic_selector {
+                Some(sel) => format!("{screen}:{sel}"),
+                None => format!("{screen}:none"),
             };
             push_input(&mut args, &["-f", "avfoundation", "-i", &input]);
-            if with_mic {
+            if mic_selector.is_some() {
                 audio_maps.push("0:a".into());
             }
             // The loopback (game/system audio) needs its own avfoundation instance — one input

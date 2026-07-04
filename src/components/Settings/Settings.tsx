@@ -4,9 +4,29 @@ import { invoke } from "@tauri-apps/api/core";
 const MIN_CLIP_SECONDS = 5;
 const MAX_CLIP_SECONDS = 120;
 
+function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      role="switch"
+      aria-checked={on}
+      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+        on ? "bg-accent" : "bg-surface-alt"
+      }`}
+    >
+      <span
+        className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-bg transition-transform ${
+          on ? "translate-x-5" : "translate-x-0"
+        }`}
+      />
+    </button>
+  );
+}
+
 export function Settings() {
   const [clipSeconds, setClipSeconds] = useState<number | null>(null);
   const [micEnabled, setMicEnabled] = useState<boolean | null>(null);
+  const [autostart, setAutostart] = useState<boolean | null>(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -16,6 +36,9 @@ export function Settings() {
       .catch((err) => setError(String(err)));
     invoke<boolean>("get_mic_enabled")
       .then(setMicEnabled)
+      .catch((err) => setError(String(err)));
+    invoke<boolean>("get_autostart_enabled")
+      .then(setAutostart)
       .catch((err) => setError(String(err)));
   }, []);
 
@@ -43,6 +66,18 @@ export function Settings() {
     }
   }
 
+  async function toggleAutostart() {
+    if (autostart === null) return;
+    const next = !autostart;
+    setAutostart(next);
+    try {
+      await invoke("set_autostart_enabled", { enabled: next });
+    } catch (err) {
+      setError(String(err));
+      setAutostart(!next);
+    }
+  }
+
   return (
     <div>
       <h1 className="page-title text-[26px]">Settings</h1>
@@ -53,6 +88,26 @@ export function Settings() {
       {error && <p className="mt-4 text-sm text-danger">{error}</p>}
 
       <div className="mt-7 max-w-md rounded-xl border border-border bg-surface p-4">
+        <h2 className="font-mono text-[11px] font-medium uppercase tracking-wider text-text-lo">
+          General
+        </h2>
+        <div className="mt-3 flex items-center justify-between gap-4">
+          <div>
+            <p className="text-[13.5px] font-medium text-text-hi">Launch on startup</p>
+            <p className="mt-0.5 text-xs text-text-lo">
+              Start in the background when you log in, so playtime tracking and clipping are
+              always on.
+            </p>
+          </div>
+          {autostart !== null && <Toggle on={autostart} onClick={toggleAutostart} />}
+        </div>
+        <p className="mt-4 border-t border-border pt-4 text-xs text-text-lo">
+          Closing the window keeps the app running in the tray — tracking and the clip hotkey
+          stay active. Quit from the tray icon.
+        </p>
+      </div>
+
+      <div className="mt-5 max-w-md rounded-xl border border-border bg-surface p-4">
         <h2 className="font-mono text-[11px] font-medium uppercase tracking-wider text-text-lo">
           Clips
         </h2>
@@ -87,22 +142,7 @@ export function Settings() {
               Record mic audio alongside clips. Captured continuously, even through tab-outs.
             </p>
           </div>
-          {micEnabled !== null && (
-            <button
-              onClick={toggleMic}
-              role="switch"
-              aria-checked={micEnabled}
-              className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
-                micEnabled ? "bg-accent" : "bg-surface-alt"
-              }`}
-            >
-              <span
-                className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-bg transition-transform ${
-                  micEnabled ? "translate-x-5" : "translate-x-0"
-                }`}
-              />
-            </button>
-          )}
+          {micEnabled !== null && <Toggle on={micEnabled} onClick={toggleMic} />}
         </div>
       </div>
     </div>
