@@ -4,19 +4,22 @@ import { invoke } from "@tauri-apps/api/core";
 const MIN_CLIP_SECONDS = 5;
 const MAX_CLIP_SECONDS = 120;
 
+// On-state is chalk, not rust — primary/affirmative controls are chalk in this palette;
+// rust stays reserved for live markers. The off state needs a ring + gray knob to be
+// visible at all against the card surface.
 function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
       role="switch"
       aria-checked={on}
-      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
-        on ? "bg-accent" : "bg-surface-alt"
+      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ${
+        on ? "bg-text-hi" : "bg-surface-alt ring-1 ring-inset ring-border-strong"
       }`}
     >
       <span
-        className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-bg transition-transform ${
-          on ? "translate-x-5" : "translate-x-0"
+        className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full shadow-sm transition-all duration-200 ${
+          on ? "translate-x-5 bg-bg" : "translate-x-0 bg-text-lo"
         }`}
       />
     </button>
@@ -87,10 +90,8 @@ export function Settings() {
 
       {error && <p className="mt-4 text-sm text-danger">{error}</p>}
 
-      <div className="mt-7 max-w-md rounded-xl border border-border bg-surface p-4">
-        <h2 className="font-mono text-[11px] font-medium uppercase tracking-wider text-text-lo">
-          General
-        </h2>
+      <div className="mt-7 max-w-xl rounded-xl border border-border bg-surface p-5">
+        <h2 className="shelf-label">General</h2>
         <div className="mt-3 flex items-center justify-between gap-4">
           <div>
             <p className="text-[13.5px] font-medium text-text-hi">Launch on startup</p>
@@ -107,15 +108,13 @@ export function Settings() {
         </p>
       </div>
 
-      <div className="mt-5 max-w-md rounded-xl border border-border bg-surface p-4">
-        <h2 className="font-mono text-[11px] font-medium uppercase tracking-wider text-text-lo">
-          Clips
-        </h2>
+      <div className="mt-5 max-w-xl rounded-xl border border-border bg-surface p-5">
+        <h2 className="shelf-label">Clips</h2>
         <div className="mt-3 flex items-center justify-between gap-4">
           <div>
             <p className="text-[13.5px] font-medium text-text-hi">Clip length</p>
             <p className="mt-0.5 text-xs text-text-lo">
-              How much of the buffer <span className="font-mono text-text-hi">Alt+F9</span> saves.
+              How much of the buffer <kbd className="kbd">Alt+F9</kbd> saves.
             </p>
           </div>
           {clipSeconds !== null && (

@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Search as SearchIcon, Loader2 } from "lucide-react";
+import { Search as SearchIcon, Loader2, SearchX, Check } from "lucide-react";
 import { GameCard, type RawgGameResult } from "../shared/GameCard";
+import { EmptyState } from "../shared/EmptyState";
 
 export function Search() {
   const [query, setQuery] = useState("");
@@ -63,7 +64,7 @@ export function Search() {
         <button
           type="submit"
           disabled={loading}
-          className="flex items-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-bg transition-colors hover:bg-accent-hover disabled:opacity-50"
+          className="flex items-center gap-2 rounded-xl bg-text-hi px-5 py-2.5 text-sm font-semibold text-bg transition-opacity hover:opacity-85 disabled:opacity-50"
         >
           {loading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
           {loading ? "Searching..." : "Search"}
@@ -79,13 +80,18 @@ export function Search() {
               key={game.rawgId}
               game={game}
               footer={
-                <button
-                  onClick={() => addToBacklog(game)}
-                  disabled={addedIds.has(game.rawgId)}
-                  className="w-full rounded-lg bg-surface-alt px-2 py-1.5 text-xs font-semibold text-text-hi transition-colors hover:bg-accent hover:text-bg disabled:opacity-50 disabled:hover:bg-surface-alt disabled:hover:text-text-hi"
-                >
-                  {addedIds.has(game.rawgId) ? "Added" : "Add to Backlog"}
-                </button>
+                addedIds.has(game.rawgId) ? (
+                  <span className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-success/25 bg-success/10 px-2 py-1.5 text-xs font-semibold text-success">
+                    <Check className="h-3.5 w-3.5" /> Added
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => addToBacklog(game)}
+                    className="w-full rounded-lg border border-border-strong/60 bg-surface-alt/70 px-2 py-1.5 text-xs font-semibold text-text-hi transition-colors hover:border-text-hi hover:bg-text-hi hover:text-bg"
+                  >
+                    Add to Backlog
+                  </button>
+                )
               }
             />
           ))}
@@ -93,22 +99,18 @@ export function Search() {
       )}
 
       {!loading && !error && hasSearched && results.length === 0 && (
-        <div className="mt-8 rounded-2xl border border-dashed border-border py-14 text-center">
-          <SearchIcon className="mx-auto h-8 w-8 text-text-lo" />
-          <p className="mt-3 text-sm font-semibold text-text-hi">No games found</p>
-          <p className="mt-1 text-[13px] text-text-lo">
+        <div className="mt-8">
+          <EmptyState icon={SearchX} title="No games found">
             Try a different title or check the spelling.
-          </p>
+          </EmptyState>
         </div>
       )}
 
       {!hasSearched && (
-        <div className="mt-8 rounded-2xl border border-dashed border-border py-14 text-center">
-          <SearchIcon className="mx-auto h-8 w-8 text-text-lo" />
-          <p className="mt-3 text-sm font-semibold text-text-hi">Search for a game</p>
-          <p className="mt-1 text-[13px] text-text-lo">
+        <div className="mt-8">
+          <EmptyState icon={SearchIcon} title="Search for a game">
             Look up a title to see cover art, genres, and add it to your backlog.
-          </p>
+          </EmptyState>
         </div>
       )}
     </div>

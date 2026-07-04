@@ -11,10 +11,6 @@
     @apply text-text-hi;
     font-family: theme("fontFamily.sans");
     background-color: theme("colors.bg");
-    background-image:
-      radial-gradient(900px 480px at 15% -10%, rgba(45, 212, 191, 0.05), transparent 60%),
-      radial-gradient(700px 420px at 100% 0%, rgba(45, 212, 191, 0.035), transparent 55%);
-    background-attachment: fixed;
   }
 
   ::selection {
@@ -25,7 +21,7 @@
   /* Thin, low-contrast scrollbar that matches the palette instead of the OS default. */
   * {
     scrollbar-width: thin;
-    scrollbar-color: theme("colors.border") transparent;
+    scrollbar-color: theme("colors.border-strong") transparent;
   }
   *::-webkit-scrollbar {
     width: 9px;
@@ -35,7 +31,7 @@
     background: transparent;
   }
   *::-webkit-scrollbar-thumb {
-    background-color: theme("colors.border");
+    background-color: theme("colors.border-strong");
     border-radius: 999px;
     border: 2px solid theme("colors.bg");
   }
@@ -52,13 +48,35 @@
     font-family: theme("fontFamily.mono");
   }
 
-  /* Shared page-title treatment: upright (no italic — flagged as illegible/odd), semibold
-     display serif, tight tracking. Used by every top-level page instead of ad-hoc h1 classes. */
+  /* Shared page-title treatment: bold Archivo, tight tracking, upright (italic display
+     type was explicitly rejected — don't reintroduce it). */
   .page-title {
     font-family: theme("fontFamily.display");
-    font-weight: 600;
+    font-weight: 700;
     font-style: normal;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.02em;
     color: theme("colors.text-hi");
+  }
+
+  /* Shelf section label: the small uppercase tracked label above every shelf/section. */
+  .shelf-label {
+    font-family: theme("fontFamily.mono");
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: theme("colors.text-lo");
+  }
+
+  /* Keyboard-shortcut chip (Alt+F9 etc.) — used anywhere a hotkey appears in copy. */
+  .kbd {
+    font-family: theme("fontFamily.mono");
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 6px;
+    border: 1px solid theme("colors.border-strong");
+    background: theme("colors.surface-alt");
+    color: theme("colors.text-hi");
+    white-space: nowrap;
   }
 }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Send, Sparkles, MessageCircle, Check, Compass } from "lucide-react";
 import { GameCard, type RawgGameResult } from "../shared/GameCard";
+import { EmptyState } from "../shared/EmptyState";
 import { useAppStore, type RecommendedGame } from "../../store/useAppStore";
 
 type Tab = "for-you" | "chat";
@@ -35,13 +36,19 @@ function AddToBacklogButton({
   added: boolean;
   onAdd: (game: RawgGameResult) => void;
 }) {
+  if (added) {
+    return (
+      <span className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-success/25 bg-success/10 px-2 py-1.5 text-xs font-semibold text-success">
+        <Check className="h-3.5 w-3.5" /> Added
+      </span>
+    );
+  }
   return (
     <button
       onClick={() => onAdd(game)}
-      disabled={added}
-      className="w-full rounded-lg bg-surface-alt px-2 py-1.5 text-xs font-semibold text-text-hi transition-colors hover:bg-accent hover:text-bg disabled:opacity-50 disabled:hover:bg-surface-alt disabled:hover:text-text-hi"
+      className="w-full rounded-lg border border-border-strong/60 bg-surface-alt/70 px-2 py-1.5 text-xs font-semibold text-text-hi transition-colors hover:border-text-hi hover:bg-text-hi hover:text-bg"
     >
-      {added ? "Added" : "Add to Backlog"}
+      Add to Backlog
     </button>
   );
 }
@@ -102,19 +109,19 @@ function ForYouTab() {
 
   if (!recs || recs.games.length === 0) {
     return (
-      <div className="mt-10 flex flex-col items-center gap-3 rounded-2xl border border-dashed border-border py-16 text-center">
-        <Compass className="h-6 w-6 text-text-lo" />
-        <p className="max-w-xs text-sm text-text-lo">
-          Add and play a few games to get personalized recommendations here.
-        </p>
+      <div className="mt-10">
+        <EmptyState icon={Compass} title="Nothing to go on yet">
+          Add and play a few games — recommendations here are built from what you actually
+          spend time in, not just what you save.
+        </EmptyState>
       </div>
     );
   }
 
   return (
-    <div className="mt-7 animate-fade-up">
-      <p className="text-sm font-semibold text-text-hi">Based on your activity</p>
-      <p className="mt-1 text-[13px] text-text-lo">{recs.reasoning}</p>
+    <div className="mt-8 animate-fade-up">
+      <p className="shelf-label">Based on your activity</p>
+      <p className="mt-2 max-w-2xl text-[13.5px] leading-relaxed text-text-hi/85">{recs.reasoning}</p>
       <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
         {recs.games.map((game) => (
           <GameCard
@@ -264,14 +271,14 @@ function ChatTab() {
         </div>
       )}
 
-      <div className="mx-auto max-w-2xl space-y-7 px-1 pb-4 pt-2">
+      <div className="mx-auto max-w-2xl space-y-7 px-1 pb-8 pt-2">
 
           {turns.map((turn, i) => {
             const isLastTurn = i === turns.length - 1;
             return (
               <div key={i} className="animate-fade-up space-y-4">
                 <div className="flex justify-end">
-                  <div className="max-w-[80%] rounded-2xl rounded-br-md bg-accent px-4 py-2.5 text-[13.5px] leading-relaxed text-bg">
+                  <div className="max-w-[80%] rounded-2xl rounded-br-md border border-border-strong/50 bg-surface-alt px-4 py-2.5 text-[13.5px] leading-relaxed text-text-hi">
                     {turn.user}
                   </div>
                 </div>
@@ -318,7 +325,7 @@ function ChatTab() {
                             <button
                               onClick={() => send(Array.from(selectedOptions).join(", "))}
                               disabled={loading || selectedOptions.size === 0}
-                              className="rounded-full bg-accent px-4 py-1.5 text-[12.5px] font-semibold text-bg transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-30"
+                              className="rounded-full bg-text-hi px-4 py-1.5 text-[12.5px] font-semibold text-bg transition-opacity hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-30"
                             >
                               Continue
                             </button>
@@ -389,7 +396,7 @@ function ChatTab() {
           <button
             type="submit"
             disabled={loading || !input.trim()}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-bg transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-surface-alt disabled:text-text-lo"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-text-hi text-bg transition-opacity hover:opacity-85 disabled:cursor-not-allowed disabled:bg-surface-alt disabled:text-text-lo disabled:opacity-100"
           >
             <Send className="h-3.5 w-3.5" />
           </button>
@@ -407,7 +414,7 @@ export function Recommendations() {
 
   return (
     <div className="flex h-full flex-col">
-      <h1 className="page-title text-[26px]">Recommendations</h1>
+      <h1 className="page-title text-[26px]">Discover</h1>
       <p className="mt-1.5 text-[13.5px] text-text-lo">
         "For You" is built from what you've actually been playing. "Chat" is for when you want
         something specific — describe it and I'll narrow it down with you.
@@ -419,7 +426,7 @@ export function Recommendations() {
             key={value}
             onClick={() => setTab(value)}
             className={`flex items-center gap-1.5 rounded-md px-3.5 py-1.5 text-[12.5px] font-medium transition-colors ${
-              tab === value ? "bg-accent text-bg" : "text-text-lo hover:text-text-hi"
+              tab === value ? "bg-text-hi text-bg" : "text-text-lo hover:text-text-hi"
             }`}
           >
             <Icon className="h-3.5 w-3.5" />

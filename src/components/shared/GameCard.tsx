@@ -178,7 +178,7 @@ export function GameCard({ game, note, footer }: GameCardProps) {
             className="max-h-[85vh] w-full max-w-lg animate-fade-up overflow-y-auto rounded-2xl border border-border bg-surface p-6 shadow-2xl"
           >
             <div className="flex items-start justify-between gap-3">
-              <h2 className="font-display text-xl font-medium text-text-hi">{game.name}</h2>
+              <h2 className="page-title text-xl">{game.name}</h2>
               <button
                 onClick={() => setExpanded(false)}
                 className="shrink-0 rounded-full p-1 text-text-lo transition-colors hover:bg-surface-alt hover:text-text-hi"

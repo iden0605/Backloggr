@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Link } from "react-router-dom";
 import { LibraryBig, X } from "lucide-react";
+import { EmptyState } from "../shared/EmptyState";
 import { useAppStore, Game, GameStatus } from "../../store/useAppStore";
 
 interface GameAutoAdded {
@@ -147,21 +148,22 @@ export function Backlog() {
       {error && <p className="mt-4 text-sm text-danger">{error}</p>}
 
       {games.length === 0 ? (
-        <div className="mt-8 flex flex-col items-start gap-3 rounded-xl border border-dashed border-border p-8">
-          <LibraryBig className="h-8 w-8 text-text-lo/50" />
-          <div>
-            <p className="text-sm font-semibold text-text-hi">Your backlog is empty</p>
-            <p className="mt-1 text-[13.5px] text-text-lo">
-              Search for a game to add it, or just launch something you own — it'll show up here
-              automatically if it's installed via Steam, Epic, GOG, Battle.net, or Riot.
-            </p>
-          </div>
-          <Link
-            to="/search"
-            className="rounded-lg bg-accent px-3.5 py-2 text-xs font-semibold text-bg transition-colors hover:bg-accent-hover"
+        <div className="mt-8">
+          <EmptyState
+            icon={LibraryBig}
+            title="Your backlog is empty"
+            cta={
+              <Link
+                to="/search"
+                className="rounded-lg bg-text-hi px-3.5 py-2 text-xs font-semibold text-bg transition-opacity hover:opacity-85"
+              >
+                Search for a game
+              </Link>
+            }
           >
-            Search for a game
-          </Link>
+            Search for a game to add it, or just launch something you own — it'll show up here
+            automatically if it's installed via Steam, Epic, GOG, Battle.net, or Riot.
+          </EmptyState>
         </div>
       ) : (
         <div className="mt-7 space-y-9">
@@ -170,8 +172,8 @@ export function Backlog() {
             if (sectionGames.length === 0) return null;
             return (
               <div key={status}>
-                <h2 className="font-mono text-[11px] font-medium uppercase tracking-wider text-text-lo">
-                  {label} <span className="text-text-lo/50">({sectionGames.length})</span>
+                <h2 className="shelf-label">
+                  {label} <span className="text-text-lo/50">· {sectionGames.length}</span>
                 </h2>
                 <div className="mt-3 space-y-2">
                   {sectionGames.map((game) => (
@@ -208,11 +210,11 @@ function GameRow({
   onLinkExe: (id: number, exeName: string) => void;
 }) {
   return (
-    <div className="group flex items-center gap-4 rounded-xl border border-border bg-surface p-3 transition-colors hover:border-border/80 hover:bg-surface-alt/40">
+    <div className="group flex items-center gap-4 rounded-xl border border-border bg-surface p-3 transition-colors hover:border-border-strong hover:bg-surface-alt/40">
       {game.coverUrl ? (
-        <img src={game.coverUrl} alt={game.name} className="h-14 w-14 rounded-lg object-cover" />
+        <img src={game.coverUrl} alt={game.name} className="h-14 w-24 rounded-lg object-cover" />
       ) : (
-        <div className="h-14 w-14 rounded-lg bg-gradient-to-br from-surface-alt to-surface" />
+        <div className="h-14 w-24 rounded-lg bg-gradient-to-br from-surface-alt to-surface" />
       )}
       <div className="min-w-0 flex-1">
         <p className="truncate text-[13.5px] font-semibold text-text-hi">{game.name}</p>
@@ -231,14 +233,14 @@ function GameRow({
               onLinkExe(game.id, e.target.value);
             }
           }}
-          className="mt-1.5 w-72 max-w-full rounded-md border border-transparent bg-surface-alt px-2 py-1 font-mono text-[11px] text-text-lo outline-none transition-colors placeholder:text-text-lo/50 focus:border-accent/40 focus:text-text-hi"
+          className="mt-2 w-80 max-w-full rounded-md border border-border bg-transparent px-2.5 py-1 font-mono text-[11px] text-text-lo outline-none transition-colors placeholder:text-text-lo/50 hover:border-border-strong focus:border-accent/40 focus:text-text-hi"
         />
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <StatusActions game={game} onChangeStatus={onChangeStatus} />
         <button
           onClick={() => onRemove(game.id)}
-          className="rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-text-lo transition-colors hover:border-danger/40 hover:bg-danger/10 hover:text-danger"
+          className="rounded-lg border border-border-strong/60 px-2.5 py-1.5 text-xs font-medium text-text-lo transition-colors hover:border-danger/40 hover:bg-danger/10 hover:text-danger"
         >
           Remove
         </button>
@@ -251,7 +253,7 @@ function ActionButton({ label, onClick }: { label: string; onClick: () => void }
   return (
     <button
       onClick={onClick}
-      className="rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-text-lo transition-colors hover:border-accent/40 hover:bg-accent/10 hover:text-accent"
+      className="rounded-lg border border-border-strong/60 px-2.5 py-1.5 text-xs font-medium text-text-hi/80 transition-colors hover:border-accent/40 hover:bg-accent/10 hover:text-accent"
     >
       {label}
     </button>
