@@ -1,6 +1,6 @@
 # About
 
-_Last updated: 2026-07-05 (task 16 code-complete: release.yml, ffmpeg sidecar bundling for Windows, native WASAPI loopback game audio — windows-check CI green; first tag run + real-Windows-hardware validation pending)_
+_Last updated: 2026-07-05 (task 16 code-complete: release.yml, ffmpeg sidecar bundling for Windows, native WASAPI loopback game audio — windows-check CI green; first tag run + real-Windows-hardware validation pending. New docs/ folder documents the release pipeline)_
 
 ## What It Is
 
@@ -48,6 +48,9 @@ src/components/   Layout (TopNav + Shell — "Backdrop" layout: floating top nav
 src/store/        useAppStore.ts — Zustand store (games list, currentlyPlaying)
 proxy/            Cloudflare Worker (Stage 5) — src/index.ts proxies chat turns to Groq's API,
                   deployed to a workers.dev subdomain via `wrangler deploy`
+docs/             Developer docs — release-workflow.md (how a dev commit becomes a published
+                  installer: tag-triggered release.yml + draft releases, ffmpeg sidecar
+                  mechanics, WASAPI loopback design constraints)
 ```
 
 ## Key Files
