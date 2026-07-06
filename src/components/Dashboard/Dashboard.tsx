@@ -283,7 +283,7 @@ export function Dashboard() {
       {
         icon: Sparkles,
         title: "Know what to play next",
-        copy: "Discover learns from what you actually play, or describe a mood in chat and get a shortlist.",
+        copy: "Discover learns from what you actually play, or ask Shelby for a mood-matched shortlist.",
       },
     ];
     return (

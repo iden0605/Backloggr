@@ -52,6 +52,18 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT
 );
 
+-- Discover \"Ask AI\" conversations. Turns are an opaque JSON blob of the frontend's
+-- ChatTurn shape (append-only, single-user — no need for per-turn rows); Rust never
+-- parses it, just stores and returns it.
+CREATE TABLE IF NOT EXISTS chat_conversations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  turns_json TEXT NOT NULL,
+  questions_asked INTEGER NOT NULL DEFAULT 0,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Single-row cache (id is always 1) for the Dashboard's \"based on your activity\" AI
 -- recommendations — regenerated only when backlog size, top-played genre, or that genre's
 -- playtime shift meaningfully (see commands::get_dashboard_recommendations), not on every

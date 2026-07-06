@@ -8,7 +8,7 @@ import { AddToLibraryButton, useAddToLibrary, type ChatRecommendResponse } from 
 
 /**
  * The merged find-a-game surface (task 20): one find box up top with two explicit
- * actions — Search (RAWG title lookup) and Ask AI (drops into the chat flow at
+ * actions — Search (RAWG title lookup) and Ask Shelby (drops into the chat flow at
  * /discover/chat, carrying any typed text as the first message). "For You"
  * recommendations are the page's idle content; a search swaps them for the results
  * grid until cleared.
@@ -54,7 +54,7 @@ export function Discover() {
     <div>
       <h1 className="page-title text-[26px]">Discover</h1>
       <p className="mt-1.5 text-[13.5px] text-text-lo">
-        Search for a title you know, or ask the AI when you don't.
+        Search for a title you know, or ask Shelby when you don't.
       </p>
 
       <form onSubmit={runSearch} className="mt-6">
@@ -73,7 +73,7 @@ export function Discover() {
             className="flex shrink-0 items-center gap-1.5 rounded-xl border border-border-strong px-3.5 py-2 text-[13px] font-semibold text-text-hi transition-colors hover:border-accent/50 hover:text-accent-hover"
           >
             <Sparkles className="h-3.5 w-3.5 text-accent" />
-            Ask AI
+            Ask Shelby
           </button>
           <button
             type="submit"
@@ -85,7 +85,7 @@ export function Discover() {
           </button>
         </div>
         <p className="mt-2 text-center font-mono text-[10px] uppercase tracking-wide text-text-lo/50">
-          Enter searches RAWG · Ask AI starts a conversation
+          Enter searches RAWG · Ask Shelby starts a conversation
         </p>
       </form>
 

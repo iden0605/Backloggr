@@ -42,6 +42,14 @@ interface AppState {
   chatQuestionsAsked: number;
   setChatTurns: (turns: ChatTurn[] | ((prev: ChatTurn[]) => ChatTurn[])) => void;
   setChatQuestionsAsked: (count: number | ((prev: number) => number)) => void;
+  // Row id of the active conversation in chat_conversations — null until its first
+  // save (a brand-new chat), set/cleared by DiscoverChat as chats are loaded/reset.
+  chatId: number | null;
+  setChatId: (id: number | null) => void;
+  // True once DiscoverChat has attempted to restore the most recent conversation from
+  // the DB this app-run — keeps "New chat" from being clobbered by a re-restore.
+  chatHydrated: boolean;
+  setChatHydrated: (hydrated: boolean) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -55,4 +63,8 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({
       chatQuestionsAsked: typeof count === "function" ? count(state.chatQuestionsAsked) : count,
     })),
+  chatId: null,
+  setChatId: (id) => set({ chatId: id }),
+  chatHydrated: false,
+  setChatHydrated: (hydrated) => set({ chatHydrated: hydrated }),
 }));
