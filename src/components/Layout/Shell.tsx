@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { TopNav } from "./TopNav";
 import { ErrorBoundary } from "../shared/ErrorBoundary";
+import { useAppStore } from "../../store/useAppStore";
 
 export function Shell() {
   const location = useLocation();
@@ -13,6 +14,16 @@ export function Shell() {
   useEffect(() => {
     mainRef.current?.scrollTo(0, 0);
     setScrolled(false);
+  }, [location.pathname]);
+
+  // The For You set only regenerates when the user LEAVES the Discover section — hopping
+  // Discover ↔ Shelby keeps the same grid (the store copy survives), while landing on any
+  // other page drops it so the next Discover visit fetches fresh.
+  useEffect(() => {
+    if (!location.pathname.startsWith("/discover")) {
+      const store = useAppStore.getState();
+      if (store.forYouRecs) store.setForYouRecs(null);
+    }
   }, [location.pathname]);
 
   // Dashboard renders its own full-bleed hero backdrop underneath the floating nav;

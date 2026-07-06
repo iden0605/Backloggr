@@ -627,6 +627,33 @@ pub async fn chat_recommend(
                 .map(|(game, reason)| RecommendedGame { game, reason })
                 .collect();
             prioritize_recent(&mut games);
+            // The Groq model barely knows 2024+ releases, so a release-window ask can come
+            // back short after verification. Top up from RAWG's own date-range discovery
+            // (popular releases in the window, genre-filtered) — real new games the model
+            // structurally can't name. Model picks keep the front; fills trail.
+            if games.len() < MAX_RECOMMENDATIONS {
+                if let Some(min) = min_year {
+                    let mut seen: std::collections::HashSet<i64> =
+                        games.iter().map(|g| g.game.rawg_id).collect();
+                    let excluded_lower: std::collections::HashSet<String> =
+                        excluded.iter().map(|n| n.to_lowercase()).collect();
+                    for game in rawg::discover_recent(min, max_year, &genres).await {
+                        if games.len() >= MAX_RECOMMENDATIONS {
+                            break;
+                        }
+                        if !seen.insert(game.rawg_id)
+                            || excluded_lower.contains(&game.name.to_lowercase())
+                            || !field_matches_any(&game.platform, &platforms)
+                        {
+                            continue;
+                        }
+                        games.push(RecommendedGame {
+                            game,
+                            reason: Some("Popular new release in your timeframe".to_string()),
+                        });
+                    }
+                }
+            }
             games.truncate(MAX_RECOMMENDATIONS);
             ChatRecommendResponse::Results { reasoning, games }
         }
@@ -644,17 +671,28 @@ pub async fn chat_recommend(
     Ok(result)
 }
 
+/// One taste-profile entry sent to the worker's /suggest prompt. `weight` is this game's
+/// log-dampened share of total playtime as a percent — log so a 300-hour Valorant habit
+/// pulls recommendations toward FPS without drowning out a 10-hour cozy game entirely.
+/// None when the library has no playtime yet (fresh installs fall back to recently-added
+/// games, weighted equally by omission).
+struct FavoriteSignal {
+    name: String,
+    genre: Option<String>,
+    weight: Option<u32>,
+}
+
 struct GenreSignal {
     backlog_count: i64,
     top_genre: Option<String>,
     top_genre_playtime_seconds: i64,
-    favorites: Vec<(String, Option<String>)>,
+    favorites: Vec<FavoriteSignal>,
 }
 
 /// Picks the genre the user has spent the most time playing (via each game's *primary* — first
-/// listed — genre) and a shortlist of favorite games to seed the dashboard's AI suggestion
-/// prompt: the top 3 by playtime, or (for a fresh backlog with no playtime yet) the 3 most
-/// recently added, so the widget isn't empty on day one.
+/// listed — genre) and a playtime-weighted taste profile to seed the dashboard's AI suggestion
+/// prompt: the top 15 games by playtime with log-dampened share weights, or (for a fresh
+/// backlog with no playtime yet) the 3 most recently added, so the widget isn't empty on day one.
 fn compute_genre_signal(conn: &rusqlite::Connection) -> Result<GenreSignal, String> {
     struct Row {
         name: String,
@@ -695,17 +733,33 @@ fn compute_genre_signal(conn: &rusqlite::Connection) -> Result<GenreSignal, Stri
     }
     let (top_genre, top_genre_playtime_seconds) = genre_playtime
         .into_iter()
-        .max_by_key(|(_, total)| *total)
+        // Tie-break on genre name (Reverse → alphabetically first wins): plain max over a
+        // HashMap breaks ties by iteration order, which is randomized per instance — an
+        // all-zero-playtime library (fresh import, nothing played) got a different "top
+        // genre" on every call, regenerating the recommendations cache on every visit.
+        .max_by_key(|(genre, total)| (*total, std::cmp::Reverse(genre.clone())))
         .map(|(g, t)| (Some(g), t))
         .unwrap_or((None, 0));
 
     let mut played: Vec<&Row> = rows.iter().filter(|r| r.total > 0).collect();
     played.sort_by(|a, b| b.total.cmp(&a.total));
     let favorites = if !played.is_empty() {
-        played
-            .into_iter()
-            .take(3)
-            .map(|r| (r.name.clone(), r.genre.clone()))
+        // Weight = ln(1 + hours), normalized to percent shares. Log keeps the balance the
+        // taste profile needs: 300h/100h/10h of play becomes roughly 45/36/19 rather than
+        // the raw 73/24/3 — the dominant game leads, nothing gets erased.
+        let top: Vec<&Row> = played.into_iter().take(15).collect();
+        let logs: Vec<f64> = top
+            .iter()
+            .map(|r| (1.0 + r.total as f64 / 3600.0).ln())
+            .collect();
+        let log_sum: f64 = logs.iter().sum();
+        top.iter()
+            .zip(&logs)
+            .map(|(r, log_weight)| FavoriteSignal {
+                name: r.name.clone(),
+                genre: r.genre.clone(),
+                weight: Some((log_weight / log_sum * 100.0).round().max(1.0) as u32),
+            })
             .collect()
     } else {
         let mut by_added: Vec<&Row> = rows.iter().collect();
@@ -713,7 +767,11 @@ fn compute_genre_signal(conn: &rusqlite::Connection) -> Result<GenreSignal, Stri
         by_added
             .into_iter()
             .take(3)
-            .map(|r| (r.name.clone(), r.genre.clone()))
+            .map(|r| FavoriteSignal {
+                name: r.name.clone(),
+                genre: r.genre.clone(),
+                weight: None,
+            })
             .collect()
     };
 
@@ -801,12 +859,49 @@ pub async fn get_dashboard_recommendations(
         }
     }
 
-    let favorites_json: Vec<serde_json::Value> = signal
-        .favorites
-        .iter()
-        .map(|(name, genre)| serde_json::json!({ "name": name, "genre": genre }))
-        .collect();
     let excluded = owned_game_names(&db)?;
+    let (reasoning, games) =
+        fetch_suggestions(&signal.favorites, &excluded, signal.top_genre.as_deref()).await?;
+
+    if let Ok(conn) = db.0.lock() {
+        let games_json = serde_json::to_string(&games).unwrap_or_default();
+        let _ = conn.execute(
+            "INSERT INTO dashboard_recommendations_cache
+                (id, generated_at, backlog_count, top_genre, top_genre_playtime_seconds, reasoning, games_json)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+                generated_at = excluded.generated_at,
+                backlog_count = excluded.backlog_count,
+                top_genre = excluded.top_genre,
+                top_genre_playtime_seconds = excluded.top_genre_playtime_seconds,
+                reasoning = excluded.reasoning,
+                games_json = excluded.games_json",
+            (
+                now,
+                signal.backlog_count,
+                &signal.top_genre,
+                signal.top_genre_playtime_seconds,
+                &reasoning,
+                &games_json,
+            ),
+        );
+    }
+
+    Ok(ChatRecommendResponse::Results { reasoning, games })
+}
+
+/// POSTs a favorites list to the worker's `/suggest` endpoint, resolves every returned title
+/// against RAWG, and applies the shared recency sort + cap — the fetch half of
+/// `get_dashboard_recommendations`, shared with the uncached "load more" path.
+async fn fetch_suggestions(
+    favorites: &[FavoriteSignal],
+    excluded: &[String],
+    top_genre: Option<&str>,
+) -> Result<(String, Vec<RecommendedGame>), String> {
+    let favorites_json: Vec<serde_json::Value> = favorites
+        .iter()
+        .map(|f| serde_json::json!({ "name": f.name, "genre": f.genre, "weight": f.weight }))
+        .collect();
 
     let response = rawg::http_client()
         .post(format!("{WORKER_URL}/suggest"))
@@ -837,37 +932,62 @@ pub async fn get_dashboard_recommendations(
         .into_iter()
         .map(|game| RecommendedGame { game, reason: None })
         .collect();
-    prioritize_recent(&mut games);
-    games.truncate(MAX_RECOMMENDATIONS);
 
-    if let Ok(conn) = db.0.lock() {
-        let games_json = serde_json::to_string(&games).unwrap_or_default();
-        let _ = conn.execute(
-            "INSERT INTO dashboard_recommendations_cache
-                (id, generated_at, backlog_count, top_genre, top_genre_playtime_seconds, reasoning, games_json)
-             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(id) DO UPDATE SET
-                generated_at = excluded.generated_at,
-                backlog_count = excluded.backlog_count,
-                top_genre = excluded.top_genre,
-                top_genre_playtime_seconds = excluded.top_genre_playtime_seconds,
-                reasoning = excluded.reasoning,
-                games_json = excluded.games_json",
-            (
-                now,
-                signal.backlog_count,
-                &signal.top_genre,
-                signal.top_genre_playtime_seconds,
-                &reply.reasoning,
-                &games_json,
-            ),
-        );
+    // Blend in up to 2 genuinely-new releases (last ~2 years, RAWG date-range discovery)
+    // from the player's top-played genre. The Groq model can't name games past its
+    // knowledge cutoff no matter how hard the prompt leans recent — this is where truly
+    // new titles enter the For You set.
+    if let Some(genre) = top_genre {
+        use chrono::Datelike;
+        let min_year = chrono::Utc::now().year() - 1;
+        let seen: std::collections::HashSet<i64> =
+            games.iter().map(|g| g.game.rawg_id).collect();
+        let excluded_lower: std::collections::HashSet<String> =
+            excluded.iter().map(|n| n.to_lowercase()).collect();
+        let fresh: Vec<RecommendedGame> =
+            rawg::discover_recent(min_year, None, &[genre.to_string()])
+                .await
+                .into_iter()
+                .filter(|g| {
+                    !seen.contains(&g.rawg_id) && !excluded_lower.contains(&g.name.to_lowercase())
+                })
+                .take(2)
+                .map(|game| RecommendedGame { game, reason: None })
+                .collect();
+        games.extend(fresh);
     }
 
-    Ok(ChatRecommendResponse::Results {
-        reasoning: reply.reasoning,
-        games,
-    })
+    prioritize_recent(&mut games);
+    games.truncate(MAX_RECOMMENDATIONS);
+    Ok((reply.reasoning, games))
+}
+
+/// "Load more" for the For You grid (task 21): the same activity-seeded `/suggest` ask, but
+/// with everything already on screen excluded alongside the library so a fresh batch comes
+/// back. Deliberately uncached — it only runs on an explicit click, and the cached base set
+/// in `dashboard_recommendations_cache` stays untouched.
+#[tauri::command]
+pub async fn get_more_dashboard_recommendations(
+    db: State<'_, DbState>,
+    shown: Vec<String>,
+) -> Result<ChatRecommendResponse, String> {
+    let signal = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        compute_genre_signal(&conn)?
+    };
+
+    if signal.backlog_count == 0 {
+        return Ok(ChatRecommendResponse::Results {
+            reasoning: String::new(),
+            games: vec![],
+        });
+    }
+
+    let mut excluded = owned_game_names(&db)?;
+    excluded.extend(shown);
+    let (reasoning, games) =
+        fetch_suggestions(&signal.favorites, &excluded, signal.top_genre.as_deref()).await?;
+    Ok(ChatRecommendResponse::Results { reasoning, games })
 }
 
 // ---- Ask AI chat history (chat_conversations) ----

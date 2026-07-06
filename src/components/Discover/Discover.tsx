@@ -5,6 +5,7 @@ import { Search as SearchIcon, Loader2, SearchX, Sparkles, Compass } from "lucid
 import { GameCard, type RawgGameResult } from "../shared/GameCard";
 import { EmptyState } from "../shared/EmptyState";
 import { AddToLibraryButton, useAddToLibrary, type ChatRecommendResponse } from "./common";
+import { useAppStore } from "../../store/useAppStore";
 
 /**
  * The merged find-a-game surface (task 20): one find box up top with two explicit
@@ -140,18 +141,57 @@ function ForYouSection({
   addedIds: Set<number>;
   onAdd: (game: RawgGameResult) => void;
 }) {
-  const [recs, setRecs] = useState<{ reasoning: string; games: RawgGameResult[] } | null>(null);
-  const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
+  // The shown set lives in the store so Discover ↔ Shelby round-trips keep the exact same
+  // grid (including "Load more" batches) — Shell clears it when the user leaves /discover*.
+  const recs = useAppStore((s) => s.forYouRecs);
+  const setRecs = useAppStore((s) => s.setForYouRecs);
+  const [loading, setLoading] = useState(recs === null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  // Set once a "Load more" round comes back with nothing new — hides the button rather
+  // than letting it spin up empty AI calls forever.
+  const [exhausted, setExhausted] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (recs !== null) return;
     invoke<ChatRecommendResponse>("get_dashboard_recommendations")
       .then((res) => {
         if (res.type === "results") setRecs({ reasoning: res.reasoning, games: res.games });
       })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function loadMore() {
+    if (!recs || loadingMore) return;
+    setLoadingMore(true);
+    setError(null);
+    try {
+      const res = await invoke<ChatRecommendResponse>("get_more_dashboard_recommendations", {
+        shown: recs.games.map((g) => g.name),
+      });
+      if (res.type === "results") {
+        // Belt-and-braces dedupe on top of the exclusion list the backend already sends.
+        const seen = new Set(recs.games.map((g) => g.rawgId));
+        const fresh = res.games.filter((g) => !seen.has(g.rawgId));
+        if (fresh.length === 0) setExhausted(true);
+        else setRecs({ reasoning: recs.reasoning, games: [...recs.games, ...fresh] });
+      }
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  function refineWithShelby() {
+    if (!recs) return;
+    navigate("/discover/chat", {
+      state: { seed: { reasoning: recs.reasoning, games: recs.games } },
+    });
+  }
 
   if (loading) {
     return (
@@ -166,7 +206,7 @@ function ForYouSection({
     );
   }
 
-  if (error) {
+  if (error && !recs) {
     return <p className="mt-8 text-sm text-danger">{error}</p>;
   }
 
@@ -198,6 +238,27 @@ function ForYouSection({
           />
         ))}
       </div>
+
+      <div className="mt-5 flex items-center justify-center gap-2.5">
+        {!exhausted && (
+          <button
+            onClick={loadMore}
+            disabled={loadingMore}
+            className="flex items-center gap-2 rounded-xl border border-border px-4 py-2 text-[12.5px] font-medium text-text-lo transition-colors hover:border-border-strong hover:text-text-hi disabled:opacity-50"
+          >
+            {loadingMore && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            {loadingMore ? "Finding more..." : "Load more"}
+          </button>
+        )}
+        <button
+          onClick={refineWithShelby}
+          className="flex items-center gap-1.5 rounded-xl border border-border-strong px-4 py-2 text-[12.5px] font-semibold text-text-hi transition-colors hover:border-accent/50 hover:text-accent-hover"
+        >
+          <Sparkles className="h-3.5 w-3.5 text-accent" />
+          Refine with Shelby
+        </button>
+      </div>
+      {error && <p className="mt-3 text-center text-sm text-danger">{error}</p>}
     </section>
   );
 }

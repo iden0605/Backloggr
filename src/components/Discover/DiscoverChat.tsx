@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import {
   Send,
   Sparkles,
-  MessageCircle,
+  Gamepad2,
   Check,
   ArrowLeft,
   Plus,
@@ -13,8 +13,8 @@ import {
   PanelLeftOpen,
 } from "lucide-react";
 import { GameCard } from "../shared/GameCard";
-import { useAppStore, type ChatTurn } from "../../store/useAppStore";
-import { formatRelative } from "../Library/Library";
+import { useAppStore, type ChatTurn, type RecommendedGame } from "../../store/useAppStore";
+import { formatRelative, type LibraryGame } from "../Library/Library";
 import { AddToLibraryButton, useAddToLibrary, type ChatRecommendResponse } from "./common";
 
 interface ChatMessage {
@@ -34,6 +34,13 @@ interface ChatConversation {
   title: string;
   turnsJson: string;
   questionsAsked: number;
+}
+
+// Router state the page can arrive with: `ask` carries the find box's typed text as an
+// opening message; `seed` carries the For You set from "Refine with Shelby" (task 21).
+interface ChatRouterState {
+  ask?: string;
+  seed?: { reasoning: string; games: RecommendedGame[] };
 }
 
 // Laid out identically to a turn's assistant row (same gap/avatar geometry) so the
@@ -58,6 +65,18 @@ const USER_BUBBLE_CLASS =
   "max-w-[80%] rounded-2xl rounded-br-md border border-border-strong/50 bg-surface-alt px-4 py-2.5 text-[13.5px] leading-relaxed text-text-hi";
 
 const TEXTAREA_MAX_HEIGHT = 160;
+
+// Empty-state quick prompts — one tap instead of a blank composer. Labels stay short
+// (they're chips); the message sent is a natural full ask so the narrowing loop has
+// something real to work with.
+const MOOD_PROMPTS: { label: string; message: string }[] = [
+  { label: "RPG", message: "I'm in the mood for a great RPG" },
+  { label: "Cozy", message: "Something cozy and low-stress" },
+  { label: "Horror", message: "A horror game that will actually scare me" },
+  { label: "Multiplayer", message: "A multiplayer game to play with friends" },
+  { label: "Open world", message: "A big open-world game to get lost in" },
+  { label: "Roguelike", message: "A roguelike I can replay forever" },
+];
 
 /**
  * Shelby — the AI half of the Discover surface (/discover/chat), a full-page chat
@@ -103,26 +122,34 @@ export function DiscoverChat() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [turns, loading, pending]);
 
-  // "Ask Shelby" from the find box carries the typed text as router state — send it as
-  // the opening message once, then clear the state so a remount/back can't resend it.
+  // "Ask Shelby" from the find box carries the typed text as router state — send it as the
+  // opening message once, then clear the state so a remount/back can't resend it. "Refine
+  // with Shelby" from the For You grid carries the recommendation set instead: a fresh
+  // conversation opens with that set as its first turn, ready to be refined in place.
   useEffect(() => {
-    const ask = (location.state as { ask?: string } | null)?.ask;
-    if (ask && !autoSentRef.current) {
+    const state = location.state as ChatRouterState | null;
+    if (autoSentRef.current) return;
+    if (state?.ask) {
       autoSentRef.current = true;
       navigate(location.pathname, { replace: true, state: null });
-      send(ask);
+      send(state.ask);
+    } else if (state?.seed) {
+      autoSentRef.current = true;
+      navigate(location.pathname, { replace: true, state: null });
+      seedFromForYou(state.seed);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Restore the most recent conversation once per app run (Zustand is memory-only, so a
-  // restart lands here with empty turns). Skipped when the find box carried an "ask" —
-  // that starts a fresh conversation instead of splicing into last session's.
+  // restart lands here with empty turns). Skipped when the find box carried an "ask" or
+  // the For You grid carried a seed — those start fresh instead of splicing into last
+  // session's conversation.
   useEffect(() => {
     if (chatHydrated) return;
     setChatHydrated(true);
-    const ask = (location.state as { ask?: string } | null)?.ask;
-    if (turns.length > 0 || ask) return;
+    const state = location.state as ChatRouterState | null;
+    if (turns.length > 0 || state?.ask || state?.seed) return;
     (async () => {
       try {
         const chats = await invoke<ChatSummary[]>("list_chats");
@@ -140,6 +167,23 @@ export function DiscoverChat() {
   useEffect(() => {
     void refreshChats();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // The player's top-played games feed the empty state's "More like..." quick prompts —
+  // personalized starters beat hardcoded examples. Best-effort; chips just don't show on failure.
+  const [lovedGames, setLovedGames] = useState<string[]>([]);
+  useEffect(() => {
+    invoke<LibraryGame[]>("get_library")
+      .then((games) =>
+        setLovedGames(
+          games
+            .filter((g) => g.totalSeconds > 0)
+            .sort((a, b) => b.totalSeconds - a.totalSeconds)
+            .slice(0, 3)
+            .map((g) => g.name)
+        )
+      )
+      .catch(() => {});
   }, []);
 
   async function refreshChats() {
@@ -186,6 +230,25 @@ export function DiscoverChat() {
     setChatId(chat.id);
     setSelectedOptions(new Set());
     setError(null);
+  }
+
+  // "Refine with Shelby": a new conversation whose first turn IS the For You set, so
+  // follow-ups refine it through the normal history mechanism (the shown titles go back to
+  // the model as "(I recommended: ...)"). Not persisted until the user actually replies —
+  // an untouched hand-off shouldn't clutter the history sidebar.
+  function seedFromForYou(seed: NonNullable<ChatRouterState["seed"]>) {
+    initialTurnCount.current = 0;
+    setTurns([
+      {
+        user: "What should I play next?",
+        results: { reasoning: seed.reasoning, games: seed.games },
+      },
+    ]);
+    setQuestionsAsked(0);
+    setChatId(null);
+    setSelectedOptions(new Set());
+    setError(null);
+    textareaRef.current?.focus();
   }
 
   function startNewChat() {
@@ -315,7 +378,9 @@ export function DiscoverChat() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="relative flex h-full min-h-0 flex-col">
+      {/* Barely-there warm radial wash so the page isn't a flat near-black field. */}
+      <div className="pointer-events-none absolute inset-x-0 -top-24 -z-10 h-80 bg-[radial-gradient(ellipse_70%_100%_at_50%_0%,rgba(185,106,85,0.07),transparent_70%)]" />
       <div className="flex shrink-0 items-center gap-4">
         <button
           onClick={() => navigate("/discover")}
@@ -343,7 +408,7 @@ export function DiscoverChat() {
             <div className="flex items-stretch gap-2">
               <button
                 onClick={startNewChat}
-                className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-border px-3 py-2 text-[12.5px] font-medium text-text-hi transition-colors hover:border-border-strong hover:bg-surface"
+                className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-text-hi px-3 py-2 text-[12.5px] font-semibold text-bg transition-opacity hover:opacity-85"
               >
                 <Plus className="h-3.5 w-3.5" />
                 New chat
@@ -369,10 +434,13 @@ export function DiscoverChat() {
                   return (
                     <div
                       key={chat.id}
-                      className={`group flex items-center gap-1 rounded-lg pr-1 transition-colors ${
+                      className={`group relative flex items-center gap-1 rounded-lg pr-1 transition-colors ${
                         active ? "bg-surface-alt" : "hover:bg-surface"
                       }`}
                     >
+                      {active && (
+                        <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-accent" />
+                      )}
                       <button
                         onClick={() => loadChat(chat.id).catch((err) => setError(String(err)))}
                         className="flex min-w-0 flex-1 flex-col gap-0.5 px-2.5 py-2 text-left"
@@ -427,16 +495,53 @@ export function DiscoverChat() {
 
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="min-h-0 flex-1 overflow-y-auto">
-            {turns.length === 0 && !loading && (
-              <div className="flex h-full min-h-[280px] animate-fade-up flex-col items-center justify-center gap-3 text-center">
-                <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-accent/10 text-accent">
-                  <MessageCircle className="h-5 w-5" />
+            {turns.length === 0 && !loading && !pending && (
+              <div className="mx-auto flex max-w-xl animate-fade-up flex-col items-center gap-3 pt-10 text-center">
+                <div className="flex h-14 w-14 items-center justify-center rounded-full border border-accent/30 bg-accent/10 text-accent shadow-[0_0_28px_-4px_rgba(185,106,85,0.4)]">
+                  <Gamepad2 className="h-6 w-6" />
                 </div>
-                <p className="text-[15px] font-semibold text-text-hi">Hey, I'm Shelby.</p>
-                <p className="max-w-sm text-[13.5px] leading-relaxed text-text-lo">
-                  Tell me what you're in the mood for — a genre, a game you loved, a vibe. I'll ask a
-                  question or two to narrow it down, then pull together a shortlist.
+                <p className="page-title mt-1 text-[22px]">Looking for your next obsession?</p>
+                <p className="max-w-md text-[13.5px] leading-relaxed text-text-lo">
+                  Tell me a game you loved, a genre, or just your mood — I'll help you find
+                  something you'll actually enjoy.
                 </p>
+
+                <div className="mt-5 w-full space-y-5">
+                  <div>
+                    <p className="shelf-label">In the mood for</p>
+                    <div className="mt-2.5 flex flex-wrap justify-center gap-2">
+                      {MOOD_PROMPTS.map((prompt, i) => (
+                        <button
+                          key={prompt.label}
+                          onClick={() => send(prompt.message)}
+                          style={{ animationDelay: `${100 + i * 40}ms` }}
+                          className="animate-fade-up rounded-full border border-border bg-surface px-3.5 py-1.5 text-[12.5px] font-medium text-text-hi transition-all duration-150 hover:border-accent/40 hover:bg-accent/10 hover:text-accent-hover"
+                        >
+                          {prompt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {lovedGames.length > 0 && (
+                    <div>
+                      <p className="shelf-label">More like your favorites</p>
+                      <div className="mt-2.5 flex flex-wrap justify-center gap-2">
+                        {lovedGames.map((name, i) => (
+                          <button
+                            key={name}
+                            onClick={() => send(`I loved ${name} — what should I play next?`)}
+                            style={{ animationDelay: `${340 + i * 40}ms` }}
+                            className="animate-fade-up flex items-center gap-1.5 rounded-full border border-border bg-surface px-3.5 py-1.5 text-[12.5px] font-medium text-text-hi transition-all duration-150 hover:border-accent/40 hover:bg-accent/10 hover:text-accent-hover"
+                          >
+                            <Sparkles className="h-3 w-3 text-accent" />
+                            More like {name}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -588,7 +693,7 @@ export function DiscoverChat() {
           )}
 
           <form onSubmit={handleSubmit} className="mx-auto w-full max-w-2xl shrink-0 pb-1 pt-3">
-            <div className="flex items-end gap-2 rounded-2xl border border-border bg-surface py-1.5 pl-4 pr-1.5 shadow-[0_8px_24px_-12px_rgba(0,0,0,0.5)] transition-colors focus-within:border-accent/40">
+            <div className="flex items-end gap-2.5 rounded-2xl border border-border-strong/60 bg-surface-alt/70 py-2.5 pl-5 pr-2 shadow-[0_8px_24px_-12px_rgba(0,0,0,0.5)] transition-all duration-200 hover:border-border-strong hover:shadow-[0_8px_24px_-12px_rgba(0,0,0,0.5),0_0_20px_-8px_rgba(185,106,85,0.35)] focus-within:border-accent/50 focus-within:shadow-[0_8px_24px_-12px_rgba(0,0,0,0.5),0_0_0_3px_rgba(185,106,85,0.12),0_0_28px_-8px_rgba(185,106,85,0.45)]">
               <textarea
                 ref={textareaRef}
                 value={input}
@@ -598,14 +703,14 @@ export function DiscoverChat() {
                 autoFocus
                 placeholder="Message Shelby — a game, a genre, a mood..."
                 style={{ maxHeight: TEXTAREA_MAX_HEIGHT }}
-                className="block max-h-40 flex-1 resize-none overflow-y-auto bg-transparent py-1 leading-6 text-[13.5px] text-text-hi outline-none placeholder:text-text-lo/70"
+                className="block max-h-40 flex-1 resize-none overflow-y-auto bg-transparent py-2 text-sm leading-6 text-text-hi outline-none placeholder:text-text-lo/70"
               />
               <button
                 type="submit"
                 disabled={loading || !input.trim()}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-text-hi text-bg transition-all duration-150 hover:opacity-85 enabled:active:scale-90 disabled:cursor-not-allowed disabled:bg-surface-alt disabled:text-text-lo disabled:opacity-100"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent text-bg transition-all duration-150 hover:scale-105 hover:bg-accent-hover enabled:active:scale-95 disabled:cursor-not-allowed disabled:bg-surface-alt disabled:text-text-lo disabled:hover:scale-100"
               >
-                <Send className="h-3.5 w-3.5" />
+                <Send className="h-4 w-4" />
               </button>
             </div>
             <p className="mt-2 text-center font-mono text-[10px] uppercase tracking-wide text-text-lo/50">

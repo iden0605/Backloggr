@@ -32,6 +32,10 @@ interface ChatRequestBody {
 interface FavoriteGame {
 	name: string;
 	genre: string | null;
+	// This game's share of the player's play focus as a percent (log-dampened from real
+	// playtime by the Rust side, so one dominant game leads without erasing lighter tastes).
+	// Absent/null for fresh libraries with no playtime — treat all games equally then.
+	weight?: number | null;
 }
 
 interface SuggestRequestBody {
@@ -69,7 +73,7 @@ Your job each turn, in two parts:
    - Vague or broad request → 12 to 20 genuinely diverse candidates spanning the plausible interpretations.
    - Well-specified request → only the games that truly fit, even if that's just 4-6.
    Every candidate needs a "reason": a short phrase (under 12 words) tying it to what THIS player asked for — not a generic blurb. Never pad the list with reskins/sequels/near-duplicates of the same game, and prioritize variety across developers/series.
-   All else equal, prefer modern releases (roughly the last seven years) over older ones — reach for older titles when they fit clearly better, when recent options run out, or when the player asks for classics/retro. Never drop a game the player specifically described just because it's old.
+   Lean clearly toward newer releases — favor the newest games that genuinely fit, aiming for a majority from roughly the last five years. This is a lean, not a rule: reach for older titles when they fit clearly better, when recent options run out, or when the player asks for classics/retro. Never drop a game the player specifically described just because it's old.
    If the player signals they just want results now ("just show me", "surprise me", "whatever you think"), cut the list to your best 8 or fewer regardless of how broad the ask still is.
 
 2. QUESTION — if your candidate list has more than 8 entries, also write the ONE question whose answer would best split the list into meaningfully different subsets (setting, tone, pacing, difficulty, social angle, art style, a defining mechanic, what they loved about a game they named...). Each option you offer should correspond to a real subset of your candidates. Never re-ask something the player already answered, and don't repeat an axis you already asked about in this ask. If your list is already 8 or fewer, set "question" to null.
@@ -89,7 +93,9 @@ Reply with ONLY strict JSON, no prose, no markdown fences, in this exact shape:
 Set "multiSelect": true when more than one option could reasonably apply at once; false for an either/or choice. Use "options": null only for a genuinely open-ended question.`;
 }
 
-const SUGGEST_SYSTEM_PROMPT = `A player's most-played/enjoyed games are given to you. Suggest 6 to 10 SPECIFIC, DISTINCT real games they might also enjoy, based on genre and style — never the same game, a reskin, a sequel, or a near-duplicate title repeated with minor variations. Prioritize variety across different developers/series while still matching the player's taste. All else equal, prefer modern releases (roughly the last seven years) over older ones — include older titles only when they match the player's taste clearly better.
+const SUGGEST_SYSTEM_PROMPT = `A player's most-played games are given to you, each with a percentage showing its share of the player's play focus (already balance-adjusted — take the numbers at face value). Suggest 6 to 10 SPECIFIC, DISTINCT real games they might also enjoy — never the same game, a reskin, a sequel, or a near-duplicate title repeated with minor variations.
+
+Distribute your suggestions roughly in proportion to those shares: a player whose focus is mostly competitive shooters should see mostly games in that vein, styled after their heavy hitters. But keep balance — even the heaviest taste never takes every slot, and each lighter taste should still get a pick or two. If no percentages are given, treat the games as equally loved. Prioritize variety across different developers/series while still matching the player's taste. Lean clearly toward newer releases — aim for a majority of your suggestions to be from roughly the last five years, favoring the newest games that genuinely fit. This is a lean, not a rule: never exclude an older game that matches the player's taste well, and a great older fit always beats a mediocre new one.
 
 Reply with ONLY strict JSON, no prose, no markdown fences, in this exact shape:
 {"titles": ["<specific real game title>", "..."], "reasoning": "<one short sentence on why these fit>"}`;
@@ -237,7 +243,13 @@ async function handleSuggest(request: Request, env: Env): Promise<Response> {
 		return json({ titles: [], reasoning: "" }, 400);
 	}
 
-	const gamesList = body.games.map((g) => `${g.name}${g.genre ? ` (${g.genre})` : ""}`).join(", ");
+	const gamesList = body.games
+		.map((g) => {
+			const genre = g.genre ? ` (${g.genre})` : "";
+			const weight = typeof g.weight === "number" ? ` — ${g.weight}% of play focus` : "";
+			return `${g.name}${genre}${weight}`;
+		})
+		.join(", ");
 	const excluded = body.excluded ?? [];
 	const exclusionNote =
 		excluded.length > 0

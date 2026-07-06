@@ -50,6 +50,11 @@ interface AppState {
   // the DB this app-run — keeps "New chat" from being clobbered by a re-restore.
   chatHydrated: boolean;
   setChatHydrated: (hydrated: boolean) => void;
+  // The For You set as currently shown (base fetch + any "Load more" batches). Lives here
+  // so hopping Discover ↔ Shelby keeps the exact same grid; Shell clears it when the user
+  // leaves the Discover section entirely, which is what triggers a rediscover.
+  forYouRecs: { reasoning: string; games: RecommendedGame[] } | null;
+  setForYouRecs: (recs: { reasoning: string; games: RecommendedGame[] } | null) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -67,4 +72,6 @@ export const useAppStore = create<AppState>((set) => ({
   setChatId: (id) => set({ chatId: id }),
   chatHydrated: false,
   setChatHydrated: (hydrated) => set({ chatHydrated: hydrated }),
+  forYouRecs: null,
+  setForYouRecs: (recs) => set({ forYouRecs: recs }),
 }));

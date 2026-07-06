@@ -117,6 +117,7 @@ pub fn run() {
             commands::get_game_details,
             commands::chat_recommend,
             commands::get_dashboard_recommendations,
+            commands::get_more_dashboard_recommendations,
             commands::list_chats,
             commands::get_chat,
             commands::save_chat,
