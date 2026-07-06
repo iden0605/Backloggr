@@ -69,19 +69,27 @@ Your job each turn, in two parts:
    - Vague or broad request → 12 to 20 genuinely diverse candidates spanning the plausible interpretations.
    - Well-specified request → only the games that truly fit, even if that's just 4-6.
    Every candidate needs a "reason": a short phrase (under 12 words) tying it to what THIS player asked for — not a generic blurb. Never pad the list with reskins/sequels/near-duplicates of the same game, and prioritize variety across developers/series.
+   All else equal, prefer modern releases (roughly the last seven years) over older ones — reach for older titles when they fit clearly better, when recent options run out, or when the player asks for classics/retro. Never drop a game the player specifically described just because it's old.
    If the player signals they just want results now ("just show me", "surprise me", "whatever you think"), cut the list to your best 8 or fewer regardless of how broad the ask still is.
 
 2. QUESTION — if your candidate list has more than 8 entries, also write the ONE question whose answer would best split the list into meaningfully different subsets (setting, tone, pacing, difficulty, social angle, art style, a defining mechanic, what they loved about a game they named...). Each option you offer should correspond to a real subset of your candidates. Never re-ask something the player already answered, and don't repeat an axis you already asked about in this ask. If your list is already 8 or fewer, set "question" to null.
 
+HARD CONSTRAINTS: when the player states an objective requirement — a release window ("modern", "from 2024 or newer"), a platform, multiplayer/co-op — every candidate must satisfy it. When the player refines or pushes back after already seeing results ("more modern", "less grindy", "not those"), this is a NEW constraint on the same ask: rebuild the candidate list against ALL constraints now in play, drop every previously recommended game that doesn't satisfy the new requirement, and only repeat a game if it clearly still fits everything. Returning the same list after a refinement is a failure.
+
+STRUCTURED FILTERS: the app verifies every candidate against a games database and silently drops any that fail these filters — so always set them when the player expressed the requirement, even if you're unsure of your candidates' exact facts. When a requirement was NOT expressed, leave the filter null.
+- "minYear"/"maxYear": release window, when the ask includes any release-date requirement ("2024-2026" → 2024 and 2026; "recent/modern" → minYear of roughly three years ago; no upper bound → null maxYear).
+- "requiredGenres": ONLY when the player explicitly demands a genre, using RAWG taxonomy names (Action, Adventure, RPG, Strategy, Shooter, Simulation, Puzzle, Platformer, Racing, Sports, Fighting, Casual, Indie, Arcade, Massively Multiplayer, Family, Board Games, Card, Educational). A candidate passes if it has ANY listed genre, so "MMORPG" → ["Massively Multiplayer", "RPG"] is wrong (an MMO shooter would pass) — use the single genre that best captures the demand, e.g. ["Massively Multiplayer"]. Mood/vibe words ("cozy", "story-rich", "chill") are NOT genres — express those through your candidate choices and leave this null.
+- "requiredPlatforms": when the player names where they play ("on my Switch", "mac games"), using names like PC, macOS, Linux, Nintendo Switch, PlayStation, Xbox, iOS, Android.
+
 Also write "reasoning": one short sentence summarizing why this set fits the ask (used as the lead-in when results are shown).
 
 Reply with ONLY strict JSON, no prose, no markdown fences, in this exact shape:
-{"candidates": [{"title": "<specific real game title>", "reason": "<why it fits, under 12 words>"}, ...], "reasoning": "<one short sentence>", "question": "<one short question>" or null, "options": ["<short choice>", "..."] or null, "multiSelect": <true or false>}
+{"candidates": [{"title": "<specific real game title>", "reason": "<why it fits, under 12 words>"}, ...], "reasoning": "<one short sentence>", "question": "<one short question>" or null, "options": ["<short choice>", "..."] or null, "multiSelect": <true or false>, "minYear": <year> or null, "maxYear": <year> or null, "requiredGenres": ["<RAWG genre>", "..."] or null, "requiredPlatforms": ["<platform>", "..."] or null}
 
 Set "multiSelect": true when more than one option could reasonably apply at once; false for an either/or choice. Use "options": null only for a genuinely open-ended question.`;
 }
 
-const SUGGEST_SYSTEM_PROMPT = `A player's most-played/enjoyed games are given to you. Suggest 4 to 8 SPECIFIC, DISTINCT real games they might also enjoy, based on genre and style — never the same game, a reskin, a sequel, or a near-duplicate title repeated with minor variations. Prioritize variety across different developers/series while still matching the player's taste.
+const SUGGEST_SYSTEM_PROMPT = `A player's most-played/enjoyed games are given to you. Suggest 6 to 10 SPECIFIC, DISTINCT real games they might also enjoy, based on genre and style — never the same game, a reskin, a sequel, or a near-duplicate title repeated with minor variations. Prioritize variety across different developers/series while still matching the player's taste. All else equal, prefer modern releases (roughly the last seven years) over older ones — include older titles only when they match the player's taste clearly better.
 
 Reply with ONLY strict JSON, no prose, no markdown fences, in this exact shape:
 {"titles": ["<specific real game title>", "..."], "reasoning": "<one short sentence on why these fit>"}`;
@@ -160,6 +168,10 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
 		question?: string | null;
 		options?: string[] | null;
 		multiSelect?: boolean;
+		minYear?: number | null;
+		maxYear?: number | null;
+		requiredGenres?: string[] | null;
+		requiredPlatforms?: string[] | null;
 	};
 	try {
 		parsed = JSON.parse(raw);
@@ -180,7 +192,29 @@ async function handleChat(request: Request, env: Env): Promise<Response> {
 	// narrowing progress.
 	const capReached = questionsAsked >= 4;
 	if (candidates.length > 0 && (candidates.length <= 8 || capReached || !parsed.question)) {
-		return json({ titles: candidates.slice(0, 8), reasoning: parsed.reasoning ?? "" });
+		// Structured filters ride along so the Rust side can enforce them against each
+		// resolved game's REAL RAWG facts (release date, genres, platforms) — the model's
+		// own knowledge of them is unreliable. With any filter active, send spare
+		// candidates: some will be dropped by that verification.
+		const minYear = typeof parsed.minYear === "number" ? parsed.minYear : null;
+		const maxYear = typeof parsed.maxYear === "number" ? parsed.maxYear : null;
+		const stringList = (v: unknown): string[] | null => {
+			if (!Array.isArray(v)) return null;
+			const items = v.filter((s): s is string => typeof s === "string" && s.length > 0);
+			return items.length > 0 ? items : null;
+		};
+		const requiredGenres = stringList(parsed.requiredGenres);
+		const requiredPlatforms = stringList(parsed.requiredPlatforms);
+		// Always send spares (not just the 8 that will show): the Rust side drops
+		// filter failures and floats recent releases to the front before capping at 8.
+		return json({
+			titles: candidates.slice(0, 16),
+			reasoning: parsed.reasoning ?? "",
+			minYear,
+			maxYear,
+			requiredGenres,
+			requiredPlatforms,
+		});
 	}
 
 	if (parsed.question) {

@@ -20,7 +20,7 @@ export function Shell() {
   // needs a viewport-height column (its transcript scrolls internally, composer pinned),
   // everything else flows naturally and scrolls in <main>.
   const isDashboard = location.pathname === "/";
-  const isChatPage = location.pathname === "/recommendations";
+  const isChatPage = location.pathname === "/discover/chat";
   const wrapperClass = isDashboard
     ? ""
     : isChatPage

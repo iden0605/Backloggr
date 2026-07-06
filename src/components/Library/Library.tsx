@@ -196,10 +196,10 @@ export function Library() {
             title="Your library is empty"
             cta={
               <Link
-                to="/search"
+                to="/discover"
                 className="rounded-lg bg-text-hi px-3.5 py-2 text-xs font-semibold text-bg transition-opacity hover:opacity-85"
               >
-                Search for a game
+                Find a game
               </Link>
             }
           >

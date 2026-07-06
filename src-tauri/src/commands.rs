@@ -465,6 +465,17 @@ enum WorkerReply {
     Search {
         titles: Vec<WorkerTitle>,
         reasoning: String,
+        // Structured filters the player asked for (release window, explicit genre, platform) —
+        // the model proposes them, but they're enforced HERE against each resolved game's real
+        // RAWG facts, since the model's own knowledge of dates/genres/platforms is unreliable.
+        #[serde(default, rename = "minYear")]
+        min_year: Option<i32>,
+        #[serde(default, rename = "maxYear")]
+        max_year: Option<i32>,
+        #[serde(default, rename = "requiredGenres")]
+        required_genres: Option<Vec<String>>,
+        #[serde(default, rename = "requiredPlatforms")]
+        required_platforms: Option<Vec<String>>,
     },
     Clarify {
         question: String,
@@ -478,6 +489,40 @@ enum WorkerReply {
 }
 
 const MAX_RECOMMENDATIONS: usize = 8;
+
+/// Games released within this many years count as "recent" and get surfaced before older
+/// picks in recommendation results — a soft priority, not a filter: older games still show
+/// when there aren't enough recent ones (or when the player explicitly asked for old games).
+const RECENT_RELEASE_YEARS: i32 = 7;
+
+/// Stable-partitions recommendations so games released within `RECENT_RELEASE_YEARS` come
+/// first, preserving the model's own ranking within each group. Unknown release dates sort
+/// with the older group.
+fn prioritize_recent(games: &mut [RecommendedGame]) {
+    use chrono::Datelike;
+    let cutoff = chrono::Utc::now().year() - RECENT_RELEASE_YEARS;
+    games.sort_by_key(|g| match rawg::release_year(&g.game) {
+        Some(year) if year >= cutoff => 0u8,
+        _ => 1,
+    });
+}
+
+/// Case-insensitive "contains any" check of a comma-joined RAWG field ("Action, RPG, Indie" /
+/// "PC, Nintendo Switch") against a required-values list. An empty list means the constraint
+/// wasn't asked for (pass); a game missing the field entirely can't be verified (fail) —
+/// consistent with the release-window policy in `chat_recommend`.
+fn field_matches_any(field: &Option<String>, wanted: &[String]) -> bool {
+    if wanted.is_empty() {
+        return true;
+    }
+    match field {
+        Some(value) => {
+            let value = value.to_lowercase();
+            wanted.iter().any(|w| value.contains(&w.to_lowercase()))
+        }
+        None => false,
+    }
+}
 
 /// Fetches every game name in the library (any status, including dropped — re-recommending a
 /// game the player abandoned reads just as fake as one they own) for the worker's exclusion
@@ -542,14 +587,47 @@ pub async fn chat_recommend(
             multi_select,
             candidate_count,
         },
-        WorkerReply::Search { titles, reasoning } => {
+        WorkerReply::Search {
+            titles,
+            reasoning,
+            min_year,
+            max_year,
+            required_genres,
+            required_platforms,
+        } => {
             let pairs: Vec<(String, Option<String>)> =
                 titles.into_iter().map(|t| (t.title, t.reason)).collect();
-            let games = rawg::resolve_titles_with_reasons(&pairs, MAX_RECOMMENDATIONS)
+            let genres = required_genres.unwrap_or_default();
+            let platforms = required_platforms.unwrap_or_default();
+            // Resolve every candidate (the worker sends spares beyond the 8 that will show):
+            // filter failures get dropped and recent releases float to the front below, so
+            // capping before either step would waste candidates.
+            let mut games: Vec<RecommendedGame> = rawg::resolve_titles_with_reasons(&pairs, pairs.len())
                 .await
                 .into_iter()
+                .filter(|(game, _)| {
+                    // Verify each asked-for constraint against the game's real RAWG facts.
+                    // A game RAWG lacks the fact for can't be verified — dropping it beats
+                    // showing a 2014 game for a "2024+" ask (same policy for genre/platform).
+                    let year_ok = if min_year.is_some() || max_year.is_some() {
+                        match rawg::release_year(game) {
+                            Some(year) => {
+                                min_year.is_none_or(|min| year >= min)
+                                    && max_year.is_none_or(|max| year <= max)
+                            }
+                            None => false,
+                        }
+                    } else {
+                        true
+                    };
+                    year_ok
+                        && field_matches_any(&game.genre, &genres)
+                        && field_matches_any(&game.platform, &platforms)
+                })
                 .map(|(game, reason)| RecommendedGame { game, reason })
                 .collect();
+            prioritize_recent(&mut games);
+            games.truncate(MAX_RECOMMENDATIONS);
             ChatRecommendResponse::Results { reasoning, games }
         }
     };
@@ -751,11 +829,16 @@ pub async fn get_dashboard_recommendations(
     }
 
     let reply: SuggestReply = response.json().await.map_err(|e| e.to_string())?;
-    let games: Vec<RecommendedGame> = rawg::resolve_titles(&reply.titles, MAX_RECOMMENDATIONS)
+    // Resolve everything the model named (it sends more than the 8 shown), float recent
+    // releases to the front, then cap — same recency policy as chat results.
+    let title_count = reply.titles.len();
+    let mut games: Vec<RecommendedGame> = rawg::resolve_titles(&reply.titles, title_count)
         .await
         .into_iter()
         .map(|game| RecommendedGame { game, reason: None })
         .collect();
+    prioritize_recent(&mut games);
+    games.truncate(MAX_RECOMMENDATIONS);
 
     if let Ok(conn) = db.0.lock() {
         let games_json = serde_json::to_string(&games).unwrap_or_default();

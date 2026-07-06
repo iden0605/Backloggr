@@ -36,7 +36,7 @@ export interface Game {
 interface AppState {
   currentlyPlayingId: number | null;
   setCurrentlyPlayingId: (id: number | null) => void;
-  // Recommendations "Chat" tab state, lifted out of the component so it survives route
+  // Discover "Ask AI" chat state, lifted out of the component so it survives route
   // navigation and tab switches instead of resetting every time ChatTab unmounts.
   chatTurns: ChatTurn[];
   chatQuestionsAsked: number;

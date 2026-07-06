@@ -1,140 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Send, Sparkles, MessageCircle, Check, Compass } from "lucide-react";
-import { GameCard, type RawgGameResult } from "../shared/GameCard";
-import { EmptyState } from "../shared/EmptyState";
-import { useAppStore, type RecommendedGame } from "../../store/useAppStore";
-
-type Tab = "for-you" | "chat";
-
-const TABS: { value: Tab; label: string; icon: typeof Sparkles }[] = [
-  { value: "for-you", label: "For You", icon: Sparkles },
-  { value: "chat", label: "Chat", icon: MessageCircle },
-];
+import { useLocation, useNavigate } from "react-router-dom";
+import { Send, Sparkles, MessageCircle, Check, ArrowLeft } from "lucide-react";
+import { GameCard } from "../shared/GameCard";
+import { useAppStore } from "../../store/useAppStore";
+import { AddToLibraryButton, useAddToLibrary, type ChatRecommendResponse } from "./common";
 
 interface ChatMessage {
   role: "user" | "assistant";
   content: string;
-}
-
-type ChatRecommendResponse =
-  | {
-      type: "clarify";
-      question: string;
-      options: string[] | null;
-      multiSelect: boolean;
-      candidateCount: number | null;
-    }
-  | { type: "results"; reasoning: string; games: RecommendedGame[] };
-
-function AddToBacklogButton({
-  game,
-  added,
-  onAdd,
-}: {
-  game: RawgGameResult;
-  added: boolean;
-  onAdd: (game: RawgGameResult) => void;
-}) {
-  if (added) {
-    return (
-      <span className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-success/25 bg-success/10 px-2 py-1.5 text-xs font-semibold text-success">
-        <Check className="h-3.5 w-3.5" /> Added
-      </span>
-    );
-  }
-  return (
-    <button
-      onClick={() => onAdd(game)}
-      className="w-full rounded-lg border border-border-strong/60 bg-surface-alt/70 px-2 py-1.5 text-xs font-semibold text-text-hi transition-colors hover:border-text-hi hover:bg-text-hi hover:text-bg"
-    >
-      Add to Library
-    </button>
-  );
-}
-
-function useAddToBacklog() {
-  const [addedIds, setAddedIds] = useState<Set<number>>(new Set());
-  const [error, setError] = useState<string | null>(null);
-
-  async function addToBacklog(game: RawgGameResult) {
-    try {
-      await invoke("add_game", {
-        rawgId: game.rawgId,
-        name: game.name,
-        coverUrl: game.coverUrl,
-        genre: game.genre,
-        platform: game.platform,
-      });
-      setAddedIds((prev) => new Set(prev).add(game.rawgId));
-    } catch (err) {
-      setError(String(err));
-    }
-  }
-
-  return { addedIds, addToBacklog, error };
-}
-
-function ForYouTab() {
-  const [recs, setRecs] = useState<{ reasoning: string; games: RawgGameResult[] } | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const { addedIds, addToBacklog, error: addError } = useAddToBacklog();
-
-  useEffect(() => {
-    invoke<ChatRecommendResponse>("get_dashboard_recommendations")
-      .then((res) => {
-        if (res.type === "results") setRecs({ reasoning: res.reasoning, games: res.games });
-      })
-      .catch((err) => setError(String(err)))
-      .finally(() => setLoading(false));
-  }, []);
-
-  if (loading) {
-    return (
-      <div className="mt-10 flex items-center gap-2.5 text-sm text-text-lo">
-        <span className="flex gap-1">
-          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-accent [animation-delay:-0.3s]" />
-          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-accent [animation-delay:-0.15s]" />
-          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-accent" />
-        </span>
-        Finding games based on your activity...
-      </div>
-    );
-  }
-
-  if (error || addError) {
-    return <p className="mt-6 text-sm text-danger">{error ?? addError}</p>;
-  }
-
-  if (!recs || recs.games.length === 0) {
-    return (
-      <div className="mt-10">
-        <EmptyState icon={Compass} title="Nothing to go on yet">
-          Add and play a few games — recommendations here are built from what you actually
-          spend time in, not just what you save.
-        </EmptyState>
-      </div>
-    );
-  }
-
-  return (
-    <div className="mt-8 animate-fade-up">
-      <p className="shelf-label">Based on your activity</p>
-      <p className="mt-2 max-w-2xl text-[13.5px] leading-relaxed text-text-hi/85">{recs.reasoning}</p>
-      <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
-        {recs.games.map((game) => (
-          <GameCard
-            key={game.rawgId}
-            game={game}
-            footer={
-              <AddToBacklogButton game={game} added={addedIds.has(game.rawgId)} onAdd={addToBacklog} />
-            }
-          />
-        ))}
-      </div>
-    </div>
-  );
 }
 
 function ThinkingBubble() {
@@ -154,7 +28,15 @@ function ThinkingBubble() {
 
 const TEXTAREA_MAX_HEIGHT = 160;
 
-function ChatTab() {
+/**
+ * The AI half of the Discover surface (/discover/chat) — a full-page chat takeover
+ * reached via the find box's "Ask AI" action, which may carry the typed text along
+ * as the conversation's next message (router state `ask`). Conversation state lives
+ * in the Zustand store, so leaving and coming back resumes where you were.
+ */
+export function DiscoverChat() {
+  const navigate = useNavigate();
+  const location = useLocation();
   const [input, setInput] = useState("");
   const turns = useAppStore((s) => s.chatTurns);
   const setTurns = useAppStore((s) => s.setChatTurns);
@@ -162,18 +44,29 @@ function ChatTab() {
   const setQuestionsAsked = useAppStore((s) => s.setChatQuestionsAsked);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { addedIds, addToBacklog, error: addError } = useAddToBacklog();
+  const { addedIds, addToLibrary, error: addError } = useAddToLibrary();
   const [selectedOptions, setSelectedOptions] = useState<Set<string>>(new Set());
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const autoSentRef = useRef(false);
 
-  // Auto-scroll to the latest message on every new turn or reply, and again whenever the tab
-  // remounts (e.g. navigating back to Recommendations) so returning always lands at the bottom.
-  // Scrolls whichever ancestor actually scrolls (Shell's <main>), rather than assuming this
-  // component owns its own scroll container — sturdier than a fixed-height flex column.
+  // Auto-scroll to the latest message on every new turn or reply, and again whenever the
+  // page remounts (e.g. navigating back to the chat) so returning always lands at the bottom.
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [turns, loading]);
+
+  // "Ask AI" from the find box carries the typed text as router state — send it as the
+  // opening message once, then clear the state so a remount/back can't resend it.
+  useEffect(() => {
+    const ask = (location.state as { ask?: string } | null)?.ask;
+    if (ask && !autoSentRef.current) {
+      autoSentRef.current = true;
+      navigate(location.pathname, { replace: true, state: null });
+      send(ask);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function toggleOption(option: string) {
     setSelectedOptions((prev) => {
@@ -191,7 +84,16 @@ function ChatTab() {
       if (turn.assistantText) {
         history.push({ role: "assistant", content: turn.assistantText });
       } else if (turn.results) {
-        history.push({ role: "assistant", content: turn.results.reasoning });
+        // Include the actual titles shown, not just the reasoning line — otherwise a
+        // follow-up like "something more modern than these" has no referent and the
+        // model happily regenerates the same set.
+        const shown = turn.results.games.map((g) => g.name).join(", ");
+        history.push({
+          role: "assistant",
+          content: shown
+            ? `${turn.results.reasoning} (I recommended: ${shown})`
+            : turn.results.reasoning,
+        });
       }
     }
     return history;
@@ -258,21 +160,31 @@ function ChatTab() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto">
-      {turns.length === 0 && (
-        <div className="flex h-full min-h-[280px] animate-fade-up flex-col items-center justify-center gap-3 text-center">
-          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-accent/10 text-accent">
-            <MessageCircle className="h-5 w-5" />
+      <div className="flex shrink-0 items-center gap-4">
+        <button
+          onClick={() => navigate("/discover")}
+          className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-[12.5px] font-medium text-text-lo transition-colors hover:border-border-strong hover:text-text-hi"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+          Back to browse
+        </button>
+        <h1 className="page-title text-[20px]">Ask AI</h1>
+      </div>
+
+      <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
+        {turns.length === 0 && !loading && (
+          <div className="flex h-full min-h-[280px] animate-fade-up flex-col items-center justify-center gap-3 text-center">
+            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-accent/10 text-accent">
+              <MessageCircle className="h-5 w-5" />
+            </div>
+            <p className="max-w-sm text-[13.5px] leading-relaxed text-text-lo">
+              Tell me what you're in the mood for — a genre, a game you loved, a vibe. I'll ask a
+              question or two to narrow it down, then pull together a shortlist.
+            </p>
           </div>
-          <p className="max-w-sm text-[13.5px] leading-relaxed text-text-lo">
-            Tell me what you're in the mood for — a genre, a game you loved, a vibe. I'll ask a
-            question or two to narrow it down, then pull together a shortlist.
-          </p>
-        </div>
-      )}
+        )}
 
-      <div className="mx-auto max-w-2xl space-y-7 px-1 pb-8 pt-2">
-
+        <div className="mx-auto max-w-2xl space-y-7 px-1 pb-8 pt-2">
           {turns.map((turn, i) => {
             const isLastTurn = i === turns.length - 1;
             return (
@@ -350,10 +262,10 @@ function ChatTab() {
                             game={game}
                             note={game.reason}
                             footer={
-                              <AddToBacklogButton
+                              <AddToLibraryButton
                                 game={game}
                                 added={addedIds.has(game.rawgId)}
-                                onAdd={addToBacklog}
+                                onAdd={addToLibrary}
                               />
                             }
                           />
@@ -372,9 +284,9 @@ function ChatTab() {
             );
           })}
 
-        {loading && <ThinkingBubble />}
-        <div ref={bottomRef} />
-      </div>
+          {loading && <ThinkingBubble />}
+          <div ref={bottomRef} />
+        </div>
       </div>
 
       {(error || addError) && (
@@ -405,43 +317,6 @@ function ChatTab() {
           Enter to send · Shift + Enter for a new line
         </p>
       </form>
-    </div>
-  );
-}
-
-export function Recommendations() {
-  const [tab, setTab] = useState<Tab>("for-you");
-
-  return (
-    <div className="flex h-full flex-col">
-      <h1 className="page-title text-[26px]">Discover</h1>
-      <p className="mt-1.5 text-[13.5px] text-text-lo">
-        "For You" is built from what you've actually been playing. "Chat" is for when you want
-        something specific — describe it and I'll narrow it down with you.
-      </p>
-
-      <div className="mt-5 flex w-fit gap-1 rounded-lg bg-surface p-1">
-        {TABS.map(({ value, label, icon: Icon }) => (
-          <button
-            key={value}
-            onClick={() => setTab(value)}
-            className={`flex items-center gap-1.5 rounded-md px-3.5 py-1.5 text-[12.5px] font-medium transition-colors ${
-              tab === value ? "bg-text-hi text-bg" : "text-text-lo hover:text-text-hi"
-            }`}
-          >
-            <Icon className="h-3.5 w-3.5" />
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {tab === "for-you" ? (
-        <ForYouTab />
-      ) : (
-        <div className="mt-2 min-h-0 flex-1">
-          <ChatTab />
-        </div>
-      )}
     </div>
   );
 }

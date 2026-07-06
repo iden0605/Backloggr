@@ -27,6 +27,7 @@ struct RawgResult {
     slug: String,
     name: String,
     background_image: Option<String>,
+    released: Option<String>,
     genres: Vec<RawgGenre>,
     platforms: Option<Vec<RawgPlatformEntry>>,
 }
@@ -79,6 +80,16 @@ pub struct RawgGameResult {
     pub genre: Option<String>,
     pub platform: Option<String>,
     pub rawg_url: String,
+    /// RAWG's release date (`YYYY-MM-DD`) — the authoritative source for release-window
+    /// filtering of AI recommendations (the model's own date knowledge is unreliable).
+    /// `default` keeps pre-existing dashboard cache rows deserializing.
+    #[serde(default)]
+    pub released: Option<String>,
+}
+
+/// Release year parsed from RAWG's `YYYY-MM-DD` date, `None` when RAWG has no date.
+pub fn release_year(game: &RawgGameResult) -> Option<i32> {
+    game.released.as_deref()?.get(..4)?.parse().ok()
 }
 
 #[derive(Serialize)]
@@ -141,6 +152,7 @@ pub async fn search_games(query: &str) -> Result<Vec<RawgGameResult>, String> {
             genre: join_names(r.genres.into_iter().map(|g| g.name).collect()),
             platform: join_platforms(r.platforms),
             rawg_url: format!("https://rawg.io/games/{}", r.slug),
+            released: r.released,
         })
         .collect();
 
@@ -188,6 +200,7 @@ async fn search_best_match(title: &str) -> Option<RawgGameResult> {
         genre: join_names(r.genres.into_iter().map(|g| g.name).collect()),
         platform: join_platforms(r.platforms),
         rawg_url: format!("https://rawg.io/games/{}", r.slug),
+        released: r.released,
     })
 }
 

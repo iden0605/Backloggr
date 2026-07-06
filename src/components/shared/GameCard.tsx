@@ -67,7 +67,7 @@ interface GameCardProps {
   footer?: ReactNode;
 }
 
-/** Compact card for grids (Search + Recommendations results); click anywhere to expand
+/** Compact card for grids (Discover search + AI results); click anywhere to expand
  *  into a detail panel that lazily fetches richer RAWG metadata via `get_game_details`. */
 export function GameCard({ game, note, footer }: GameCardProps) {
   const [expanded, setExpanded] = useState(false);

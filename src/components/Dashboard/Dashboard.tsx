@@ -299,10 +299,10 @@ export function Dashboard() {
             automatically.
           </p>
           <Link
-            to="/search"
+            to="/discover"
             className="mt-6 inline-block rounded-lg bg-text-hi px-4 py-2 text-[12.5px] font-semibold text-bg transition-opacity hover:opacity-85"
           >
-            Search for a game
+            Find a game
           </Link>
         </div>
 
