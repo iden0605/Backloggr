@@ -37,8 +37,8 @@ interface DailyPlaytime {
 interface DashboardStats {
   totalPlaytimeSeconds: number;
   gamesCompleted: number;
-  gamesInBacklog: number;
-  gamesPlaying: number;
+  gamesInLibrary: number;
+  gamesPlayedCount: number;
   gamesPlayed: GamePlaytime[];
   playtimeLast7Days: DailyPlaytime[];
 }
@@ -50,9 +50,10 @@ interface CurrentlyPlaying {
   startedAt: string;
 }
 
-interface GameTotalPlaytime {
-  gameId: number;
+interface LibraryGame extends Game {
   totalSeconds: number;
+  lastPlayedAt: string | null;
+  sessionCount: number;
 }
 
 // SQLite's CURRENT_TIMESTAMP is UTC but formatted without a timezone marker
@@ -161,8 +162,8 @@ function Hero({
 function StatStrip({ stats, periodLabel }: { stats: DashboardStats; periodLabel: string }) {
   const cells = [
     { value: formatDuration(stats.totalPlaytimeSeconds), label: `Played · ${periodLabel}` },
-    { value: String(stats.gamesPlaying), label: "Playing" },
-    { value: String(stats.gamesInBacklog), label: "In backlog" },
+    { value: String(stats.gamesInLibrary), label: "In library" },
+    { value: String(stats.gamesPlayedCount), label: "Played" },
     { value: String(stats.gamesCompleted), label: "Completed" },
   ];
   return (
@@ -198,8 +199,7 @@ function GameShelfCard({ game }: { game: GamePlaytime }) {
 export function Dashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [currentlyPlaying, setCurrentlyPlaying] = useState<CurrentlyPlaying | null>(null);
-  const [backlogGames, setBacklogGames] = useState<Game[]>([]);
-  const [lifetimeByGame, setLifetimeByGame] = useState<Map<number, number>>(new Map());
+  const [libraryGames, setLibraryGames] = useState<LibraryGame[]>([]);
   const [period, setPeriod] = useState<Period>("week");
   const [error, setError] = useState<string | null>(null);
 
@@ -213,14 +213,11 @@ export function Dashboard() {
     invoke<CurrentlyPlaying | null>("get_currently_playing")
       .then(setCurrentlyPlaying)
       .catch((e) => setError(String(e)));
-    // Backlog list feeds the idle hero's "up next" pick; lifetime totals feed the hero's
-    // per-game line. Both are cheap local reads.
-    invoke<Game[]>("get_backlog")
-      .then(setBacklogGames)
-      .catch(() => setBacklogGames([]));
-    invoke<GameTotalPlaytime[]>("get_playtime_totals")
-      .then((totals) => setLifetimeByGame(new Map(totals.map((t) => [t.gameId, t.totalSeconds]))))
-      .catch(() => setLifetimeByGame(new Map()));
+    // Library aggregates feed the idle hero's "jump back in" pick and the live hero's
+    // lifetime line — one cheap local read.
+    invoke<LibraryGame[]>("get_library")
+      .then(setLibraryGames)
+      .catch(() => setLibraryGames([]));
   }, []);
 
   useEffect(() => {
@@ -267,8 +264,7 @@ export function Dashboard() {
   const isFirstRun =
     !currentlyPlaying &&
     stats.totalPlaytimeSeconds === 0 &&
-    stats.gamesPlaying === 0 &&
-    stats.gamesInBacklog === 0 &&
+    stats.gamesInLibrary === 0 &&
     stats.gamesCompleted === 0 &&
     stats.gamesPlayed.length === 0;
 
@@ -296,7 +292,7 @@ export function Dashboard() {
           <p className="font-mono text-[11px] font-medium uppercase tracking-[0.18em] text-accent">
             Welcome
           </p>
-          <h1 className="page-title mt-3 text-5xl">Your backlog starts here</h1>
+          <h1 className="page-title mt-3 text-5xl">Your library starts here</h1>
           <p className="mt-4 max-w-lg text-[13.5px] leading-relaxed text-text-lo">
             Add a game and start playing — playtime, stats, and trends will build up on this
             page. Search for a title, or just launch something you own and it'll be picked up
@@ -323,17 +319,27 @@ export function Dashboard() {
     );
   }
 
-  // Idle hero: feature the next thing to play — first backlog game with art, else wishlist,
-  // else the most-played game as a "jump back in".
-  const upNext =
-    backlogGames.find((g) => g.status === "backlog" && g.coverUrl) ??
-    backlogGames.find((g) => g.status === "wishlist" && g.coverUrl) ??
+  // Idle hero: recent activity, not a queue — the game most recently actually played.
+  // ("Up next from your backlog" died with the queue model; the library doesn't tell you
+  // what to play, it reflects what you play.)
+  const jumpBackIn =
+    libraryGames
+      .filter((g) => g.totalSeconds > 0 && g.lastPlayedAt)
+      .sort((a, b) => parseUtc(b.lastPlayedAt!).getTime() - parseUtc(a.lastPlayedAt!).getTime())[0] ??
     null;
-  const jumpBackIn = stats.gamesPlayed[0] ?? null;
 
   const lifetimeLine = (gameId: number) => {
-    const total = lifetimeByGame.get(gameId);
+    const total = libraryGames.find((g) => g.id === gameId)?.totalSeconds;
     return total && total > 0 ? `${formatDuration(total)} lifetime` : null;
+  };
+
+  const relativeDays = (timestamp: string) => {
+    const days = Math.floor((Date.now() - parseUtc(timestamp).getTime()) / 86_400_000);
+    if (days <= 0) return "today";
+    if (days === 1) return "yesterday";
+    if (days < 14) return `${days} days ago`;
+    if (days < 60) return `${Math.floor(days / 7)} weeks ago`;
+    return `${Math.floor(days / 30)} months ago`;
   };
 
   return (
@@ -353,16 +359,11 @@ export function Dashboard() {
             )}
           </p>
         </Hero>
-      ) : upNext ? (
-        <Hero label="Up next · from your backlog" title={upNext.name} coverUrl={upNext.coverUrl}>
-          <p className="mt-3 text-[13px] text-text-lo">
-            Launch it and tracking starts automatically.
-          </p>
-        </Hero>
       ) : jumpBackIn ? (
         <Hero label="Jump back in" title={jumpBackIn.name} coverUrl={jumpBackIn.coverUrl}>
           <p className="mt-3 text-[13px] text-text-lo">
-            {formatDuration(jumpBackIn.totalSeconds)} played — pick it back up anytime.
+            Last played {relativeDays(jumpBackIn.lastPlayedAt!)} ·{" "}
+            {formatDuration(jumpBackIn.totalSeconds)} total
           </p>
         </Hero>
       ) : (

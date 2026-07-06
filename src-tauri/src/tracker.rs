@@ -167,14 +167,14 @@ async fn auto_register_and_track(
     let game: Result<(i64, String), _> = match &rawg_match {
         Some(m) => conn.query_row(
             "INSERT INTO games (rawg_id, name, cover_url, genre, platform, status, exe_name)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'playing', ?6)
-             ON CONFLICT(rawg_id) DO UPDATE SET exe_name = excluded.exe_name, status = 'playing'
+             VALUES (?1, ?2, ?3, ?4, ?5, 'backlog', ?6)
+             ON CONFLICT(rawg_id) DO UPDATE SET exe_name = excluded.exe_name
              RETURNING id, name",
             rusqlite::params![m.rawg_id, m.name, m.cover_url, m.genre, m.platform, exe_name],
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
         ),
         None => conn.query_row(
-            "INSERT INTO games (name, status, exe_name) VALUES (?1, 'playing', ?2) RETURNING id, name",
+            "INSERT INTO games (name, status, exe_name) VALUES (?1, 'backlog', ?2) RETURNING id, name",
             rusqlite::params![display_fallback, exe_name],
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
         ),
@@ -363,13 +363,12 @@ pub fn start(app: AppHandle) {
                             );
                         }
                     } else if is_running && !already_tracking {
-                        // A game the user actually launched is "playing" almost by definition —
-                        // flip it out of Backlog/Wishlist automatically so the status field
-                        // tracks reality instead of requiring a manual dropdown update.
-                        // `completed`/`dropped` are deliberate user calls, so those are left
-                        // alone (replaying a completed game doesn't un-complete it).
+                        // Library model: "playing" is derived from the open session, never
+                        // stored. The only status a launch changes is wishlist → library
+                        // ('backlog'): actually running a game means you own it. Manual marks
+                        // (`completed`/`dropped`) stay put — replaying doesn't un-mark them.
                         let _ = conn.execute(
-                            "UPDATE games SET status = 'playing' WHERE id = ?1 AND status NOT IN ('completed', 'dropped')",
+                            "UPDATE games SET status = 'backlog' WHERE id = ?1 AND status = 'wishlist'",
                             [game_id],
                         );
 

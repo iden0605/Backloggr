@@ -115,5 +115,13 @@ pub fn init(app_data_dir: &PathBuf) -> Connection {
     // between runs.
     add_column_if_missing(&conn, "games", "steam_appid", "steam_appid INTEGER");
 
+    // Library model (v2): activity ("playing now" / played / never played) is derived from
+    // sessions, not stored. The status column keeps its original CHECK values but they now
+    // mean: 'backlog' = plain in-library, 'completed' / 'dropped' ("Not for me") = the two
+    // manual marks, 'wishlist' = the separate wishlist tab. 'playing' is legacy — the tracker
+    // no longer writes it; normalize any rows left over from the queue era.
+    conn.execute("UPDATE games SET status = 'backlog' WHERE status = 'playing'", [])
+        .expect("failed to normalize legacy 'playing' statuses");
+
     conn
 }

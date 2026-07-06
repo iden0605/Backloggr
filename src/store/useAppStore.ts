@@ -34,9 +34,7 @@ export interface Game {
 }
 
 interface AppState {
-  games: Game[];
   currentlyPlayingId: number | null;
-  setGames: (games: Game[]) => void;
   setCurrentlyPlayingId: (id: number | null) => void;
   // Recommendations "Chat" tab state, lifted out of the component so it survives route
   // navigation and tab switches instead of resetting every time ChatTab unmounts.
@@ -47,9 +45,7 @@ interface AppState {
 }
 
 export const useAppStore = create<AppState>((set) => ({
-  games: [],
   currentlyPlayingId: null,
-  setGames: (games) => set({ games }),
   setCurrentlyPlayingId: (id) => set({ currentlyPlayingId: id }),
   chatTurns: [],
   chatQuestionsAsked: 0,

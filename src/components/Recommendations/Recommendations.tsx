@@ -48,7 +48,7 @@ function AddToBacklogButton({
       onClick={() => onAdd(game)}
       className="w-full rounded-lg border border-border-strong/60 bg-surface-alt/70 px-2 py-1.5 text-xs font-semibold text-text-hi transition-colors hover:border-text-hi hover:bg-text-hi hover:text-bg"
     >
-      Add to Backlog
+      Add to Library
     </button>
   );
 }

@@ -105,7 +105,8 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            commands::get_backlog,
+            commands::get_library,
+            commands::get_game_stats,
             commands::search_rawg,
             commands::add_game,
             commands::update_game_status,
@@ -113,7 +114,6 @@ pub fn run() {
             commands::set_game_exe_name,
             commands::get_dashboard_stats,
             commands::get_currently_playing,
-            commands::get_playtime_totals,
             commands::get_game_details,
             commands::chat_recommend,
             commands::get_dashboard_recommendations,

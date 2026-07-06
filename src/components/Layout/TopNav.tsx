@@ -5,7 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 
 const navItems = [
   { to: "/", label: "Dashboard", end: true },
-  { to: "/backlog", label: "Backlog" },
+  { to: "/library", label: "Library" },
   { to: "/search", label: "Search" },
   { to: "/recommendations", label: "Discover" },
   { to: "/clips", label: "Clips" },

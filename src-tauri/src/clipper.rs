@@ -1180,18 +1180,20 @@ fn load_clip(conn: &rusqlite::Connection, id: i64) -> Result<Clip, String> {
 }
 
 #[tauri::command]
-pub fn get_clips(db: tauri::State<DbState>) -> Result<Vec<Clip>, String> {
+pub fn get_clips(db: tauri::State<DbState>, game_id: Option<i64>) -> Result<Vec<Clip>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
+    // game_id filters to one game's clips (Library detail page); omitted = the full gallery.
     let mut stmt = conn
         .prepare(
             "SELECT c.id, c.game_id, g.name, c.file_path, c.thumbnail_path, c.duration_seconds,
                     c.created_at, c.title, c.notes
              FROM clips c LEFT JOIN games g ON g.id = c.game_id
+             WHERE ?1 IS NULL OR c.game_id = ?1
              ORDER BY c.created_at DESC",
         )
         .map_err(|e| e.to_string())?;
     let clips = stmt
-        .query_map([], |row| {
+        .query_map([game_id], |row| {
             Ok(Clip {
                 id: row.get(0)?,
                 game_id: row.get(1)?,

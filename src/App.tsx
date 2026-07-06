@@ -3,7 +3,8 @@ import { Routes, Route } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { Shell } from "./components/Layout/Shell";
 import { Dashboard } from "./components/Dashboard/Dashboard";
-import { Backlog } from "./components/Backlog/Backlog";
+import { Library } from "./components/Library/Library";
+import { GameDetail } from "./components/Library/GameDetail";
 import { Search } from "./components/Search/Search";
 import { Recommendations } from "./components/Recommendations/Recommendations";
 import { Clips } from "./components/Clips/Clips";
@@ -41,7 +42,8 @@ function App() {
       <Route path="overlay" element={<OverlayToast />} />
       <Route element={<Shell />}>
         <Route index element={<Dashboard />} />
-        <Route path="backlog" element={<Backlog />} />
+        <Route path="library" element={<Library />} />
+        <Route path="library/:id" element={<GameDetail />} />
         <Route path="search" element={<Search />} />
         <Route path="recommendations" element={<Recommendations />} />
         <Route path="clips" element={<Clips />} />

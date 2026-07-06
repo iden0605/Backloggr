@@ -47,7 +47,7 @@ export function Search() {
     <div>
       <h1 className="page-title text-[26px]">Search</h1>
       <p className="mt-1.5 text-[13.5px] text-text-lo">
-        Find games on RAWG and add them straight to your backlog.
+        Find games on RAWG and add them straight to your library.
       </p>
 
       <form onSubmit={runSearch} className="mt-6 flex gap-2">
@@ -89,7 +89,7 @@ export function Search() {
                     onClick={() => addToBacklog(game)}
                     className="w-full rounded-lg border border-border-strong/60 bg-surface-alt/70 px-2 py-1.5 text-xs font-semibold text-text-hi transition-colors hover:border-text-hi hover:bg-text-hi hover:text-bg"
                   >
-                    Add to Backlog
+                    Add to Library
                   </button>
                 )
               }
@@ -109,7 +109,7 @@ export function Search() {
       {!hasSearched && (
         <div className="mt-8">
           <EmptyState icon={SearchIcon} title="Search for a game">
-            Look up a title to see cover art, genres, and add it to your backlog.
+            Look up a title to see cover art, genres, and add it to your library.
           </EmptyState>
         </div>
       )}

@@ -33,7 +33,7 @@ function formatPlaytime(minutes: number): string {
   return `${(minutes / 60).toFixed(minutes < 600 ? 1 : 0)} hrs`;
 }
 
-/** Settings card: paste a Steam profile → review the owned library → import to the backlog. */
+/** Settings card: paste a Steam profile → review the owned games → import to the library. */
 export function SteamImportSection() {
   const [profile, setProfile] = useState("");
   const [fetching, setFetching] = useState(false);
@@ -66,7 +66,7 @@ export function SteamImportSection() {
       <p className="mt-3 text-[13.5px] font-medium text-text-hi">Import your Steam library</p>
       <p className="mt-0.5 text-xs text-text-lo">
         Pulls your entire owned library — including games you've never launched — and adds the
-        ones you pick to the backlog. Your profile's "Game details" must be set to Public.
+        ones you pick to your library. Your profile's "Game details" must be set to Public.
       </p>
       <div className="mt-3 flex gap-2">
         <input
@@ -175,7 +175,7 @@ function SteamImportModal({
           <div>
             <h2 className="page-title text-[17px]">Import from Steam</h2>
             <p className="mt-0.5 text-xs text-text-lo">
-              {library.games.length} games found · {importable.length} not in your backlog yet
+              {library.games.length} games found · {importable.length} not in your library yet
             </p>
           </div>
           <button
@@ -197,7 +197,7 @@ function SteamImportModal({
               Imported {summary.imported} game{summary.imported === 1 ? "" : "s"}
             </p>
             <p className="text-xs text-text-lo">
-              {summary.linked > 0 && `${summary.linked} linked to existing backlog entries. `}
+              {summary.linked > 0 && `${summary.linked} linked to existing library entries. `}
               {summary.skipped > 0 && `${summary.skipped} already imported. `}
               Covers and genres came from RAWG where a match was found.
             </p>
@@ -277,7 +277,7 @@ function SteamImportModal({
                       {game.name}
                     </span>
                     {game.inBacklog ? (
-                      <span className="shrink-0 text-[11px] text-text-lo">In backlog</span>
+                      <span className="shrink-0 text-[11px] text-text-lo">In library</span>
                     ) : (
                       <span className="shrink-0 font-mono text-[11px] text-text-lo">
                         {formatPlaytime(game.playtimeMinutes)}
