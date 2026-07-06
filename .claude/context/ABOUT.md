@@ -1,6 +1,6 @@
 # About
 
-_Last updated: 2026-07-06 (task 17 code-complete: Steam library import — steam.rs, two-step fetch/review/import flow in Settings, games.steam_appid dedupe column; awaiting the user's Steam Web API key in steam.rs::STEAM_API_KEY + a live test)_
+_Last updated: 2026-07-06 (task 17 complete and live-verified: Steam library import — steam.rs, two-step fetch/review/import flow in Settings, games.steam_appid dedupe column; STEAM_API_KEY injected at compile time from a GitHub repo secret / gitignored src-tauri/.cargo/config.toml, never committed. All 17 v1 tasks done. A v2 refinement phase is now planned — tasks 18-27 in PLAN.md, starting with the Backlog→Library rethink brainstorm)_
 
 ## What It Is
 
