@@ -1,12 +1,46 @@
-import { Outlet } from "react-router-dom";
-import { Sidebar } from "./Sidebar";
+import { useEffect, useRef, useState } from "react";
+import { Outlet, useLocation } from "react-router-dom";
+import { TopNav } from "./TopNav";
+import { ErrorBoundary } from "../shared/ErrorBoundary";
 
 export function Shell() {
+  const location = useLocation();
+  const mainRef = useRef<HTMLElement>(null);
+  const [scrolled, setScrolled] = useState(false);
+
+  // The scroll container is shared across routes — reset position (and the nav's
+  // solid state) when navigating so pages never open mid-scroll.
+  useEffect(() => {
+    mainRef.current?.scrollTo(0, 0);
+    setScrolled(false);
+  }, [location.pathname]);
+
+  // Dashboard renders its own full-bleed hero backdrop underneath the floating nav;
+  // every other page gets a standard centered content column below it. The chat page
+  // needs a viewport-height column (its transcript scrolls internally, composer pinned),
+  // everything else flows naturally and scrolls in <main>.
+  const isDashboard = location.pathname === "/";
+  const isChatPage = location.pathname === "/recommendations";
+  const wrapperClass = isDashboard
+    ? ""
+    : isChatPage
+      ? "mx-auto h-full w-full max-w-5xl px-8 pb-6 pt-24"
+      : "mx-auto w-full max-w-5xl px-8 pb-12 pt-24";
+
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-neutral-900 text-neutral-100">
-      <Sidebar />
-      <main className="flex-1 overflow-y-auto p-6">
-        <Outlet />
+    <div className="relative flex h-screen w-screen flex-col overflow-hidden bg-bg text-text-hi">
+      <TopNav solid={scrolled || !isDashboard} />
+      <main
+        ref={mainRef}
+        onScroll={() => setScrolled((mainRef.current?.scrollTop ?? 0) > 16)}
+        className="flex-1 overflow-y-auto"
+      >
+        <div className={wrapperClass}>
+          {/* Keyed by path so navigating away from a crashed page resets the boundary. */}
+          <ErrorBoundary key={location.pathname}>
+            <Outlet />
+          </ErrorBoundary>
+        </div>
       </main>
     </div>
   );

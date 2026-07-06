@@ -1,3 +1,82 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  html {
+    background-color: theme("colors.bg");
+  }
+
+  body {
+    @apply text-text-hi;
+    font-family: theme("fontFamily.sans");
+    background-color: theme("colors.bg");
+  }
+
+  ::selection {
+    background: theme("colors.accent.DEFAULT");
+    color: theme("colors.bg");
+  }
+
+  /* Thin, low-contrast scrollbar that matches the palette instead of the OS default. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: theme("colors.border-strong") transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: theme("colors.border-strong");
+    border-radius: 999px;
+    border: 2px solid theme("colors.bg");
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: theme("colors.text-lo");
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: theme("fontFamily.display");
+  }
+  .font-mono {
+    font-family: theme("fontFamily.mono");
+  }
+
+  /* Shared page-title treatment: bold Archivo, tight tracking, upright (italic display
+     type was explicitly rejected — don't reintroduce it). */
+  .page-title {
+    font-family: theme("fontFamily.display");
+    font-weight: 700;
+    font-style: normal;
+    letter-spacing: -0.02em;
+    color: theme("colors.text-hi");
+  }
+
+  /* Shelf section label: the small uppercase tracked label above every shelf/section. */
+  .shelf-label {
+    font-family: theme("fontFamily.mono");
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: theme("colors.text-lo");
+  }
+
+  /* Keyboard-shortcut chip (Alt+F9 etc.) — used anywhere a hotkey appears in copy. */
+  .kbd {
+    font-family: theme("fontFamily.mono");
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 6px;
+    border: 1px solid theme("colors.border-strong");
+    background: theme("colors.surface-alt");
+    color: theme("colors.text-hi");
+    white-space: nowrap;
+  }
+}

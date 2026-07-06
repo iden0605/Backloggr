@@ -1,0 +1,55 @@
+# Builds and publishes installers when a version tag (v*) is pushed. Windows is the real ship
+# target (.msi + .nsis, with ffmpeg bundled as a sidecar so end users never install it — see
+# tauri.windows.conf.json's externalBin); the .dmg exists for the macOS dev platform and keeps
+# its PATH-lookup ffmpeg. The release is created as a DRAFT: review the assets on GitHub, then
+# publish it by hand.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Stage the ffmpeg sidecar under the target-triple filename tauri's externalBin expects.
+      # Pinned to a versioned gyan.dev package — those URLs are permanent, unlike BtbN's
+      # rotating "latest" autobuild assets. The essentials build carries everything clipper.rs
+      # uses (gdigrab, dshow, libx264, aac).
+      - name: Stage ffmpeg sidecar (Windows)
+        if: matrix.platform == 'windows-latest'
+        run: |
+          Invoke-WebRequest -Uri https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.0.1-essentials_build.zip -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-dl
+          New-Item -Path src-tauri/binaries -ItemType Directory -Force
+          Copy-Item ffmpeg-dl/ffmpeg-8.0.1-essentials_build/bin/ffmpeg.exe src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Game Backlog ${{ github.ref_name }}"
+          releaseDraft: true

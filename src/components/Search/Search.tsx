@@ -1,13 +1,8 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-
-interface RawgGameResult {
-  rawgId: number;
-  name: string;
-  coverUrl: string | null;
-  genre: string | null;
-  platform: string | null;
-}
+import { Search as SearchIcon, Loader2, SearchX, Check } from "lucide-react";
+import { GameCard, type RawgGameResult } from "../shared/GameCard";
+import { EmptyState } from "../shared/EmptyState";
 
 export function Search() {
   const [query, setQuery] = useState("");
@@ -15,6 +10,7 @@ export function Search() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [addedIds, setAddedIds] = useState<Set<number>>(new Set());
+  const [hasSearched, setHasSearched] = useState(false);
 
   async function runSearch(e: React.FormEvent) {
     e.preventDefault();
@@ -24,6 +20,7 @@ export function Search() {
     try {
       const found = await invoke<RawgGameResult[]>("search_rawg", { query });
       setResults(found);
+      setHasSearched(true);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -48,48 +45,74 @@ export function Search() {
 
   return (
     <div>
-      <h1 className="text-2xl font-semibold">Search</h1>
-      <p className="mt-2 text-neutral-400">Search RAWG for games to add to your backlog.</p>
+      <h1 className="page-title text-[26px]">Search</h1>
+      <p className="mt-1.5 text-[13.5px] text-text-lo">
+        Find games on RAWG and add them straight to your backlog.
+      </p>
 
-      <form onSubmit={runSearch} className="mt-4 flex gap-2">
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search for a game..."
-          className="flex-1 rounded bg-neutral-800 px-3 py-2 text-neutral-100 outline-none focus:ring-1 focus:ring-neutral-500"
-        />
+      <form onSubmit={runSearch} className="mt-6 flex gap-2">
+        <div className="relative flex-1">
+          <SearchIcon className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-text-lo" />
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search for a game..."
+            className="w-full rounded-xl border border-border bg-surface py-2.5 pl-10 pr-3 text-sm text-text-hi outline-none transition-colors placeholder:text-text-lo/70 focus:border-accent/50"
+          />
+        </div>
         <button
           type="submit"
           disabled={loading}
-          className="rounded bg-neutral-700 px-4 py-2 font-medium hover:bg-neutral-600 disabled:opacity-50"
+          className="flex items-center gap-2 rounded-xl bg-text-hi px-5 py-2.5 text-sm font-semibold text-bg transition-opacity hover:opacity-85 disabled:opacity-50"
         >
+          {loading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
           {loading ? "Searching..." : "Search"}
         </button>
       </form>
 
-      {error && <p className="mt-4 text-red-400">{error}</p>}
+      {error && <p className="mt-4 text-sm text-danger">{error}</p>}
 
-      <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
-        {results.map((game) => (
-          <div key={game.rawgId} className="overflow-hidden rounded bg-neutral-800">
-            {game.coverUrl && (
-              <img src={game.coverUrl} alt={game.name} className="h-32 w-full object-cover" />
-            )}
-            <div className="p-2">
-              <p className="truncate font-medium">{game.name}</p>
-              {game.genre && <p className="truncate text-xs text-neutral-400">{game.genre}</p>}
-              <button
-                onClick={() => addToBacklog(game)}
-                disabled={addedIds.has(game.rawgId)}
-                className="mt-2 w-full rounded bg-neutral-700 px-2 py-1 text-sm hover:bg-neutral-600 disabled:opacity-50"
-              >
-                {addedIds.has(game.rawgId) ? "Added" : "Add to Backlog"}
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
+      {results.length > 0 && (
+        <div className="mt-7 grid animate-fade-up grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4">
+          {results.map((game) => (
+            <GameCard
+              key={game.rawgId}
+              game={game}
+              footer={
+                addedIds.has(game.rawgId) ? (
+                  <span className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-success/25 bg-success/10 px-2 py-1.5 text-xs font-semibold text-success">
+                    <Check className="h-3.5 w-3.5" /> Added
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => addToBacklog(game)}
+                    className="w-full rounded-lg border border-border-strong/60 bg-surface-alt/70 px-2 py-1.5 text-xs font-semibold text-text-hi transition-colors hover:border-text-hi hover:bg-text-hi hover:text-bg"
+                  >
+                    Add to Backlog
+                  </button>
+                )
+              }
+            />
+          ))}
+        </div>
+      )}
+
+      {!loading && !error && hasSearched && results.length === 0 && (
+        <div className="mt-8">
+          <EmptyState icon={SearchX} title="No games found">
+            Try a different title or check the spelling.
+          </EmptyState>
+        </div>
+      )}
+
+      {!hasSearched && (
+        <div className="mt-8">
+          <EmptyState icon={SearchIcon} title="Search for a game">
+            Look up a title to see cover art, genres, and add it to your backlog.
+          </EmptyState>
+        </div>
+      )}
     </div>
   );
 }

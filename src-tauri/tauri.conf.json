@@ -10,6 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "Game Backlog",
@@ -20,12 +21,17 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPDATA/clips/*"]
+      }
     }
   },
   "bundle": {
     "active": true,
     "targets": ["msi", "nsis", "dmg"],
+    "resources": ["resources/tabbed_out.png"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

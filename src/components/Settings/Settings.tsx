@@ -1,8 +1,149 @@
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+
+const MIN_CLIP_SECONDS = 5;
+const MAX_CLIP_SECONDS = 120;
+
+// On-state is chalk, not rust — primary/affirmative controls are chalk in this palette;
+// rust stays reserved for live markers. The off state needs a ring + gray knob to be
+// visible at all against the card surface.
+function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      role="switch"
+      aria-checked={on}
+      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ${
+        on ? "bg-text-hi" : "bg-surface-alt ring-1 ring-inset ring-border-strong"
+      }`}
+    >
+      <span
+        className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full shadow-sm transition-all duration-200 ${
+          on ? "translate-x-5 bg-bg" : "translate-x-0 bg-text-lo"
+        }`}
+      />
+    </button>
+  );
+}
+
 export function Settings() {
+  const [clipSeconds, setClipSeconds] = useState<number | null>(null);
+  const [micEnabled, setMicEnabled] = useState<boolean | null>(null);
+  const [autostart, setAutostart] = useState<boolean | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    invoke<number>("get_clip_seconds")
+      .then(setClipSeconds)
+      .catch((err) => setError(String(err)));
+    invoke<boolean>("get_mic_enabled")
+      .then(setMicEnabled)
+      .catch((err) => setError(String(err)));
+    invoke<boolean>("get_autostart_enabled")
+      .then(setAutostart)
+      .catch((err) => setError(String(err)));
+  }, []);
+
+  async function commit(value: number) {
+    const clamped = Math.min(MAX_CLIP_SECONDS, Math.max(MIN_CLIP_SECONDS, value));
+    setClipSeconds(clamped);
+    try {
+      await invoke("set_clip_seconds", { seconds: clamped });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function toggleMic() {
+    if (micEnabled === null) return;
+    const next = !micEnabled;
+    setMicEnabled(next);
+    try {
+      await invoke("set_mic_enabled", { enabled: next });
+    } catch (err) {
+      setError(String(err));
+      setMicEnabled(!next);
+    }
+  }
+
+  async function toggleAutostart() {
+    if (autostart === null) return;
+    const next = !autostart;
+    setAutostart(next);
+    try {
+      await invoke("set_autostart_enabled", { enabled: next });
+    } catch (err) {
+      setError(String(err));
+      setAutostart(!next);
+    }
+  }
+
   return (
     <div>
-      <h1 className="text-2xl font-semibold">Settings</h1>
-      <p className="mt-2 text-neutral-400">Tracking, clipping, AI, and general app settings.</p>
+      <h1 className="page-title text-[26px]">Settings</h1>
+      <p className="mt-1.5 text-[13.5px] text-text-lo">
+        Tracking, clipping, AI, and general app settings.
+      </p>
+
+      {error && <p className="mt-4 text-sm text-danger">{error}</p>}
+
+      <div className="mt-7 max-w-xl rounded-xl border border-border bg-surface p-5">
+        <h2 className="shelf-label">General</h2>
+        <div className="mt-3 flex items-center justify-between gap-4">
+          <div>
+            <p className="text-[13.5px] font-medium text-text-hi">Launch on startup</p>
+            <p className="mt-0.5 text-xs text-text-lo">
+              Start in the background when you log in, so playtime tracking and clipping are
+              always on.
+            </p>
+          </div>
+          {autostart !== null && <Toggle on={autostart} onClick={toggleAutostart} />}
+        </div>
+        <p className="mt-4 border-t border-border pt-4 text-xs text-text-lo">
+          Closing the window keeps the app running in the tray — tracking and the clip hotkey
+          stay active. Quit from the tray icon.
+        </p>
+      </div>
+
+      <div className="mt-5 max-w-xl rounded-xl border border-border bg-surface p-5">
+        <h2 className="shelf-label">Clips</h2>
+        <div className="mt-3 flex items-center justify-between gap-4">
+          <div>
+            <p className="text-[13.5px] font-medium text-text-hi">Clip length</p>
+            <p className="mt-0.5 text-xs text-text-lo">
+              How much of the buffer <kbd className="kbd">Alt+F9</kbd> saves.
+            </p>
+          </div>
+          {clipSeconds !== null && (
+            <div className="flex shrink-0 items-center gap-2">
+              <input
+                type="number"
+                min={MIN_CLIP_SECONDS}
+                max={MAX_CLIP_SECONDS}
+                value={clipSeconds}
+                onChange={(e) => setClipSeconds(Number(e.target.value))}
+                onBlur={(e) => commit(Number(e.target.value))}
+                className="w-16 rounded-md border border-border bg-surface-alt px-2 py-1.5 text-right font-mono text-[13px] text-text-hi outline-none transition-colors focus:border-accent/40"
+              />
+              <span className="text-xs text-text-lo">sec</span>
+              {saved && <span className="text-xs text-success">Saved</span>}
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4 flex items-center justify-between gap-4 border-t border-border pt-4">
+          <div>
+            <p className="text-[13.5px] font-medium text-text-hi">Microphone</p>
+            <p className="mt-0.5 text-xs text-text-lo">
+              Record mic audio alongside clips. Captured continuously, even through tab-outs.
+            </p>
+          </div>
+          {micEnabled !== null && <Toggle on={micEnabled} onClick={toggleMic} />}
+        </div>
+      </div>
     </div>
   );
 }

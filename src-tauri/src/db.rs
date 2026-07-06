@@ -51,6 +51,20 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT
 );
+
+-- Single-row cache (id is always 1) for the Dashboard's \"based on your activity\" AI
+-- recommendations — regenerated only when backlog size, top-played genre, or that genre's
+-- playtime shift meaningfully (see commands::get_dashboard_recommendations), not on every
+-- Dashboard load.
+CREATE TABLE IF NOT EXISTS dashboard_recommendations_cache (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  generated_at INTEGER NOT NULL,
+  backlog_count INTEGER NOT NULL,
+  top_genre TEXT,
+  top_genre_playtime_seconds INTEGER NOT NULL,
+  reasoning TEXT NOT NULL,
+  games_json TEXT NOT NULL
+);
 ";
 
 /// Adds a column to an existing table if it isn't there yet — lets us evolve `SCHEMA` without

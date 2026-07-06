@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { Link } from "react-router-dom";
+import { Clapperboard, Sparkles, Timer } from "lucide-react";
 import {
   Bar,
   BarChart,
@@ -9,6 +11,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { Game } from "../../store/useAppStore";
 
 type Period = "day" | "week" | "month" | "all";
 
@@ -47,6 +50,11 @@ interface CurrentlyPlaying {
   startedAt: string;
 }
 
+interface GameTotalPlaytime {
+  gameId: number;
+  totalSeconds: number;
+}
+
 // SQLite's CURRENT_TIMESTAMP is UTC but formatted without a timezone marker
 // ("YYYY-MM-DD HH:MM:SS"); without the "Z", JS parses it as local time and skews the elapsed time.
 function parseUtc(sqliteTimestamp: string): Date {
@@ -74,63 +82,115 @@ function formatDayLabel(date: string): string {
   return d.toLocaleDateString(undefined, { weekday: "short" });
 }
 
-function StatCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-      <p className="text-sm text-neutral-400">{label}</p>
-      <p className="mt-1 text-2xl font-semibold">{value}</p>
-    </div>
-  );
-}
-
-function CurrentlyPlayingBanner({ session }: { session: CurrentlyPlaying }) {
+function SessionTimer({ startedAt }: { startedAt: string }) {
   const [elapsedSeconds, setElapsedSeconds] = useState(() =>
-    Math.max(0, (Date.now() - parseUtc(session.startedAt).getTime()) / 1000),
+    Math.max(0, (Date.now() - parseUtc(startedAt).getTime()) / 1000),
   );
 
   useEffect(() => {
-    const startedMs = parseUtc(session.startedAt).getTime();
+    const startedMs = parseUtc(startedAt).getTime();
     const tick = () => setElapsedSeconds(Math.max(0, (Date.now() - startedMs) / 1000));
     tick();
     const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
-  }, [session.startedAt]);
+  }, [startedAt]);
 
   return (
-    <div className="flex items-center gap-4 rounded-lg border border-emerald-800 bg-emerald-950/40 p-4">
-      {session.coverUrl ? (
-        <img
-          src={session.coverUrl}
-          alt={session.name}
-          className="h-16 w-16 rounded object-cover"
-        />
-      ) : (
-        <div className="h-16 w-16 rounded bg-neutral-800" />
-      )}
-      <div className="flex-1">
-        <p className="flex items-center gap-2 text-sm font-medium text-emerald-400">
-          <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
-          Currently Playing
-        </p>
-        <p className="mt-1 text-lg font-semibold">{session.name}</p>
+    <span className="font-mono text-xl tabular-nums text-accent">
+      {formatElapsed(elapsedSeconds)}
+    </span>
+  );
+}
+
+/**
+ * The "Backdrop" hero: the featured game's own cover art fills the top of the app —
+ * blurred and darkened, melting into the page background — with a sharp poster and the
+ * session state at its base. The floating TopNav renders over the top of this.
+ */
+function Hero({
+  label,
+  live,
+  title,
+  coverUrl,
+  children,
+}: {
+  label: string;
+  live?: boolean;
+  title: string;
+  coverUrl: string | null;
+  children?: React.ReactNode;
+}) {
+  return (
+    <section className="relative">
+      <div className="absolute inset-0 overflow-hidden">
+        {coverUrl ? (
+          <img
+            src={coverUrl}
+            alt=""
+            aria-hidden
+            className="h-full w-full scale-110 object-cover blur-2xl brightness-[0.45] saturate-[0.85]"
+          />
+        ) : (
+          <div className="h-full w-full bg-gradient-to-br from-surface-alt to-bg" />
+        )}
+        {/* Melt the art into the page background so the hero has no hard bottom edge. */}
+        <div className="absolute inset-0 bg-gradient-to-b from-bg/40 via-bg/50 to-bg" />
       </div>
-      <p className="font-mono text-2xl tabular-nums text-emerald-300">
-        {formatElapsed(elapsedSeconds)}
-      </p>
+
+      <div className="relative mx-auto flex min-h-[320px] w-full max-w-5xl items-end gap-7 px-8 pb-10 pt-28">
+        {coverUrl && (
+          <img
+            src={coverUrl}
+            alt={title}
+            className="h-40 w-64 shrink-0 rounded-xl object-cover shadow-[0_24px_48px_-16px_rgba(0,0,0,0.8)] ring-1 ring-white/10"
+          />
+        )}
+        <div className="min-w-0 flex-1 animate-fade-up">
+          <p className="flex items-center gap-2.5 font-mono text-[11px] font-medium uppercase tracking-[0.18em] text-accent">
+            {live && <span className="h-1.5 w-1.5 animate-pulse-soft rounded-full bg-accent" />}
+            {label}
+          </p>
+          <h1 className="page-title mt-2.5 truncate text-4xl">{title}</h1>
+          {children}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function StatStrip({ stats, periodLabel }: { stats: DashboardStats; periodLabel: string }) {
+  const cells = [
+    { value: formatDuration(stats.totalPlaytimeSeconds), label: `Played · ${periodLabel}` },
+    { value: String(stats.gamesPlaying), label: "Playing" },
+    { value: String(stats.gamesInBacklog), label: "In backlog" },
+    { value: String(stats.gamesCompleted), label: "Completed" },
+  ];
+  return (
+    <div className="grid grid-cols-2 divide-border border-y border-border sm:grid-cols-4 sm:divide-x">
+      {cells.map((cell) => (
+        <div key={cell.label} className="px-5 py-5 first:pl-0">
+          <p className="text-[26px] font-bold tabular-nums tracking-tight text-text-hi">{cell.value}</p>
+          <p className="shelf-label mt-1">{cell.label}</p>
+        </div>
+      ))}
     </div>
   );
 }
 
-function GamePlaytimeRow({ game }: { game: GamePlaytime }) {
+function GameShelfCard({ game }: { game: GamePlaytime }) {
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-3">
+    <div className="group w-44 shrink-0 cursor-default">
       {game.coverUrl ? (
-        <img src={game.coverUrl} alt={game.name} className="h-12 w-12 rounded object-cover" />
+        <img
+          src={game.coverUrl}
+          alt={game.name}
+          className="aspect-video w-full rounded-lg object-cover transition-all duration-200 group-hover:-translate-y-1 group-hover:shadow-[0_16px_30px_-12px_rgba(0,0,0,0.7)]"
+        />
       ) : (
-        <div className="h-12 w-12 rounded bg-neutral-800" />
+        <div className="aspect-video w-full rounded-lg bg-gradient-to-br from-surface-alt to-surface transition-transform duration-200 group-hover:-translate-y-1" />
       )}
-      <p className="flex-1 truncate font-medium">{game.name}</p>
-      <p className="text-neutral-400">{formatDuration(game.totalSeconds)}</p>
+      <p className="mt-2.5 truncate text-[13px] font-medium text-text-hi">{game.name}</p>
+      <p className="mt-0.5 font-mono text-[11px] text-text-lo">{formatDuration(game.totalSeconds)}</p>
     </div>
   );
 }
@@ -138,6 +198,8 @@ function GamePlaytimeRow({ game }: { game: GamePlaytime }) {
 export function Dashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [currentlyPlaying, setCurrentlyPlaying] = useState<CurrentlyPlaying | null>(null);
+  const [backlogGames, setBacklogGames] = useState<Game[]>([]);
+  const [lifetimeByGame, setLifetimeByGame] = useState<Map<number, number>>(new Map());
   const [period, setPeriod] = useState<Period>("week");
   const [error, setError] = useState<string | null>(null);
 
@@ -147,10 +209,18 @@ export function Dashboard() {
       .catch((e) => setError(String(e)));
   }, []);
 
-  const loadCurrentlyPlaying = useCallback(() => {
+  const loadLiveState = useCallback(() => {
     invoke<CurrentlyPlaying | null>("get_currently_playing")
       .then(setCurrentlyPlaying)
       .catch((e) => setError(String(e)));
+    // Backlog list feeds the idle hero's "up next" pick; lifetime totals feed the hero's
+    // per-game line. Both are cheap local reads.
+    invoke<Game[]>("get_backlog")
+      .then(setBacklogGames)
+      .catch(() => setBacklogGames([]));
+    invoke<GameTotalPlaytime[]>("get_playtime_totals")
+      .then((totals) => setLifetimeByGame(new Map(totals.map((t) => [t.gameId, t.totalSeconds]))))
+      .catch(() => setLifetimeByGame(new Map()));
   }, []);
 
   useEffect(() => {
@@ -158,31 +228,33 @@ export function Dashboard() {
   }, [period, loadStats]);
 
   useEffect(() => {
-    loadCurrentlyPlaying();
-  }, [loadCurrentlyPlaying]);
+    loadLiveState();
+  }, [loadLiveState]);
 
   // Refresh live state the moment a session starts/ends, instead of requiring a tab switch.
   useEffect(() => {
-    const unlistenStarted = listen("session-started", () => {
-      loadCurrentlyPlaying();
+    const refresh = () => {
+      loadLiveState();
       loadStats(period);
-    });
-    const unlistenEnded = listen("session-ended", () => {
-      loadCurrentlyPlaying();
-      loadStats(period);
-    });
+    };
+    const unlistenStarted = listen("session-started", refresh);
+    const unlistenEnded = listen("session-ended", refresh);
     return () => {
       unlistenStarted.then((f) => f());
       unlistenEnded.then((f) => f());
     };
-  }, [period, loadCurrentlyPlaying, loadStats]);
+  }, [period, loadLiveState, loadStats]);
 
   if (error) {
-    return <p className="text-red-400">Failed to load dashboard: {error}</p>;
+    return (
+      <p className="mx-auto max-w-5xl px-8 pt-24 text-sm text-danger">
+        Failed to load dashboard: {error}
+      </p>
+    );
   }
 
   if (!stats) {
-    return <p className="text-neutral-400">Loading dashboard…</p>;
+    return <p className="mx-auto max-w-5xl px-8 pt-24 text-sm text-text-lo">Loading dashboard…</p>;
   }
 
   const chartData = stats.playtimeLast7Days.map((d) => ({
@@ -190,71 +262,185 @@ export function Dashboard() {
     hours: Math.round((d.totalSeconds / 3600) * 10) / 10,
   }));
 
+  // Heuristic first-run check: nothing tracked or completed and no active/backlog games —
+  // a brand-new install with an empty library.
+  const isFirstRun =
+    !currentlyPlaying &&
+    stats.totalPlaytimeSeconds === 0 &&
+    stats.gamesPlaying === 0 &&
+    stats.gamesInBacklog === 0 &&
+    stats.gamesCompleted === 0 &&
+    stats.gamesPlayed.length === 0;
+
+  if (isFirstRun) {
+    const features = [
+      {
+        icon: Timer,
+        title: "Playtime tracks itself",
+        copy: "Launch a game from Steam, Epic, GOG, Battle.net, or Riot and sessions log automatically — no timers to start.",
+      },
+      {
+        icon: Clapperboard,
+        title: "Clip the last 30 seconds",
+        copy: "A rolling buffer records while you play. Hit Alt+F9 after a great moment and it's saved.",
+      },
+      {
+        icon: Sparkles,
+        title: "Know what to play next",
+        copy: "Discover learns from what you actually play, or describe a mood in chat and get a shortlist.",
+      },
+    ];
+    return (
+      <div className="mx-auto flex min-h-screen w-full max-w-5xl flex-col justify-center px-8 pb-16 pt-24">
+        <div className="animate-fade-up">
+          <p className="font-mono text-[11px] font-medium uppercase tracking-[0.18em] text-accent">
+            Welcome
+          </p>
+          <h1 className="page-title mt-3 text-5xl">Your backlog starts here</h1>
+          <p className="mt-4 max-w-lg text-[13.5px] leading-relaxed text-text-lo">
+            Add a game and start playing — playtime, stats, and trends will build up on this
+            page. Search for a title, or just launch something you own and it'll be picked up
+            automatically.
+          </p>
+          <Link
+            to="/search"
+            className="mt-6 inline-block rounded-lg bg-text-hi px-4 py-2 text-[12.5px] font-semibold text-bg transition-opacity hover:opacity-85"
+          >
+            Search for a game
+          </Link>
+        </div>
+
+        <div className="mt-16 grid animate-fade-up gap-4 sm:grid-cols-3 [animation-delay:120ms]">
+          {features.map(({ icon: Icon, title, copy }) => (
+            <div key={title} className="rounded-xl border border-border bg-surface/60 p-5">
+              <Icon className="h-[18px] w-[18px] text-text-lo" />
+              <p className="mt-3 text-[13.5px] font-semibold text-text-hi">{title}</p>
+              <p className="mt-1.5 text-xs leading-relaxed text-text-lo">{copy}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // Idle hero: feature the next thing to play — first backlog game with art, else wishlist,
+  // else the most-played game as a "jump back in".
+  const upNext =
+    backlogGames.find((g) => g.status === "backlog" && g.coverUrl) ??
+    backlogGames.find((g) => g.status === "wishlist" && g.coverUrl) ??
+    null;
+  const jumpBackIn = stats.gamesPlayed[0] ?? null;
+
+  const lifetimeLine = (gameId: number) => {
+    const total = lifetimeByGame.get(gameId);
+    return total && total > 0 ? `${formatDuration(total)} lifetime` : null;
+  };
+
   return (
     <div>
-      <h1 className="text-2xl font-semibold">Dashboard</h1>
-
-      {currentlyPlaying && (
-        <div className="mt-4">
-          <CurrentlyPlayingBanner session={currentlyPlaying} />
-        </div>
+      {currentlyPlaying ? (
+        <Hero
+          label="Now playing"
+          live
+          title={currentlyPlaying.name}
+          coverUrl={currentlyPlaying.coverUrl}
+        >
+          <p className="mt-3 flex items-baseline gap-4 text-[13px] text-text-lo">
+            <SessionTimer startedAt={currentlyPlaying.startedAt} />
+            <span>this session</span>
+            {lifetimeLine(currentlyPlaying.gameId) && (
+              <span>· {lifetimeLine(currentlyPlaying.gameId)}</span>
+            )}
+          </p>
+        </Hero>
+      ) : upNext ? (
+        <Hero label="Up next · from your backlog" title={upNext.name} coverUrl={upNext.coverUrl}>
+          <p className="mt-3 text-[13px] text-text-lo">
+            Launch it and tracking starts automatically.
+          </p>
+        </Hero>
+      ) : jumpBackIn ? (
+        <Hero label="Jump back in" title={jumpBackIn.name} coverUrl={jumpBackIn.coverUrl}>
+          <p className="mt-3 text-[13px] text-text-lo">
+            {formatDuration(jumpBackIn.totalSeconds)} played — pick it back up anytime.
+          </p>
+        </Hero>
+      ) : (
+        <Hero label="Dashboard" title="Your library" coverUrl={null} />
       )}
 
-      <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <StatCard label={`Playtime (${PERIODS.find((p) => p.value === period)?.label})`} value={formatDuration(stats.totalPlaytimeSeconds)} />
-        <StatCard label="Currently Playing" value={String(stats.gamesPlaying)} />
-        <StatCard label="Completed" value={String(stats.gamesCompleted)} />
-        <StatCard label="Backlog" value={String(stats.gamesInBacklog)} />
-      </div>
+      <div className="mx-auto w-full max-w-5xl px-8 pb-14">
+        <StatStrip
+          stats={stats}
+          periodLabel={PERIODS.find((p) => p.value === period)?.label ?? ""}
+        />
 
-      <div className="mt-6 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-        <h2 className="text-lg font-medium">Playtime — Last 7 Days</h2>
-        <div className="mt-2 h-48">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData}>
-              <XAxis dataKey="day" stroke="#a3a3a3" fontSize={12} />
-              <YAxis stroke="#a3a3a3" fontSize={12} allowDecimals={false} />
-              <Tooltip
-                contentStyle={{ background: "#171717", border: "1px solid #404040" }}
-                formatter={(value) => [`${value}h`, "Playtime"]}
-              />
-              <Bar dataKey="hours" fill="#6366f1" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      <div className="mt-6">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-medium">Games Played</h2>
-          <div className="flex gap-1 rounded-lg bg-neutral-900 p-1">
-            {PERIODS.map((p) => (
-              <button
-                key={p.value}
-                onClick={() => setPeriod(p.value)}
-                className={`rounded-md px-3 py-1 text-sm transition-colors ${
-                  period === p.value
-                    ? "bg-indigo-600 text-white"
-                    : "text-neutral-400 hover:text-neutral-200"
-                }`}
-              >
-                {p.label}
-              </button>
-            ))}
+        <div className="mt-10">
+          <h2 className="shelf-label">Last 7 days</h2>
+          {chartData.every((d) => d.hours === 0) ? (
+            <div className="mt-4 flex h-44 items-center justify-center rounded-xl border border-dashed border-border-strong/50">
+              <p className="text-[13px] text-text-lo">
+                No sessions in the last 7 days — playtime will chart here.
+              </p>
+            </div>
+          ) : (
+          <div className="mt-4 h-44">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={chartData}>
+                <XAxis dataKey="day" stroke="#928B82" fontSize={11} tickLine={false} axisLine={false} />
+                <YAxis stroke="#928B82" fontSize={11} allowDecimals={false} tickLine={false} axisLine={false} />
+                <Tooltip
+                  cursor={{ fill: "rgba(185, 106, 85, 0.08)" }}
+                  contentStyle={{
+                    background: "#1C1A19",
+                    border: "1px solid #3A3633",
+                    borderRadius: 10,
+                    fontSize: 12,
+                    color: "#EDE8E0",
+                  }}
+                  formatter={(value) => [`${value}h`, "Playtime"]}
+                />
+                <Bar dataKey="hours" fill="#B96A55" radius={[5, 5, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
           </div>
+          )}
         </div>
 
-        {stats.gamesPlayed.length === 0 ? (
-          <p className="mt-3 text-sm text-neutral-400">
-            No playtime tracked for this period yet.
-          </p>
-        ) : (
-          <div className="mt-3 space-y-2">
-            {stats.gamesPlayed.map((g) => (
-              <GamePlaytimeRow key={g.gameId} game={g} />
-            ))}
+        <div className="mt-10">
+          <div className="flex items-center justify-between">
+            <h2 className="shelf-label">Games played</h2>
+            <div className="flex gap-1 rounded-lg bg-surface p-1">
+              {PERIODS.map((p) => (
+                <button
+                  key={p.value}
+                  onClick={() => setPeriod(p.value)}
+                  className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                    period === p.value
+                      ? "bg-text-hi text-bg"
+                      : "text-text-lo hover:text-text-hi"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
           </div>
-        )}
+
+          {stats.gamesPlayed.length === 0 ? (
+            <div className="mt-5 rounded-xl border border-dashed border-border-strong/50 px-5 py-9 text-center">
+              <p className="text-[13px] text-text-lo">
+                No playtime tracked for this period yet — games you play will shelf up here.
+              </p>
+            </div>
+          ) : (
+            <div className="mt-5 flex gap-5 overflow-x-auto pb-3">
+              {stats.gamesPlayed.map((g) => (
+                <GameShelfCard key={g.gameId} game={g} />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

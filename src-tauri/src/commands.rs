@@ -1,7 +1,7 @@
 use crate::db::DbState;
-use crate::rawg::{self, RawgGameResult};
+use crate::rawg::{self, RawgGameDetail, RawgGameResult};
 use rusqlite::OptionalExtension;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
 #[derive(Serialize)]
@@ -186,14 +186,16 @@ pub struct DashboardStats {
     pub playtime_last_7_days: Vec<DailyPlaytime>,
 }
 
-/// Maps a period selector to a SQL date-filter clause on `s.started_at`. `day` and `week` are
-/// rolling windows (last 24h / last 7 days), not calendar-aligned, to match "how much have I
-/// played recently" rather than "since Monday".
+/// Maps a period selector to a SQL date-filter clause on `s.started_at`. Buckets are calendar
+/// days in the user's LOCAL timezone (`'localtime'` uses the OS tz): `day` = today, `week`/
+/// `month` = today plus the previous 6/29 days. Timestamps are stored as UTC — without the
+/// `'localtime'` conversion, an evening session east of UTC lands on the wrong local day (e.g. a
+/// 9am AEST session is 11pm UTC the previous day, which used to count toward yesterday).
 fn period_filter(period: &str) -> Result<&'static str, String> {
     match period {
-        "day" => Ok("date(s.started_at) = date('now')"),
-        "week" => Ok("date(s.started_at) >= date('now', '-6 days')"),
-        "month" => Ok("date(s.started_at) >= date('now', '-29 days')"),
+        "day" => Ok("date(s.started_at, 'localtime') = date('now', 'localtime')"),
+        "week" => Ok("date(s.started_at, 'localtime') >= date('now', 'localtime', '-6 days')"),
+        "month" => Ok("date(s.started_at, 'localtime') >= date('now', 'localtime', '-29 days')"),
         "all" => Ok("1 = 1"),
         other => Err(format!("invalid period: {other}")),
     }
@@ -264,11 +266,13 @@ pub fn get_dashboard_stats(db: State<DbState>, period: String) -> Result<Dashboa
     };
 
     let playtime_last_7_days = {
+        // Same 'localtime' bucketing as period_filter — chart days must be the user's days.
         let mut stmt = conn
             .prepare(
-                "SELECT date(started_at) AS d, SUM(duration_seconds)
+                "SELECT date(started_at, 'localtime') AS d, SUM(duration_seconds)
                  FROM sessions
-                 WHERE duration_seconds IS NOT NULL AND date(started_at) >= date('now', '-6 days')
+                 WHERE duration_seconds IS NOT NULL
+                   AND date(started_at, 'localtime') >= date('now', 'localtime', '-6 days')
                  GROUP BY d ORDER BY d ASC",
             )
             .map_err(|e| e.to_string())?;
@@ -283,7 +287,7 @@ pub fn get_dashboard_stats(db: State<DbState>, period: String) -> Result<Dashboa
             .map(|offset| {
                 let date: String = conn
                     .query_row(
-                        "SELECT date('now', ?1)",
+                        "SELECT date('now', 'localtime', ?1)",
                         [format!("-{offset} days")],
                         |row| row.get(0),
                     )
@@ -338,4 +342,411 @@ pub fn get_currently_playing(db: State<DbState>) -> Result<Option<CurrentlyPlayi
     )
     .optional()
     .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_game_details(rawg_id: i64) -> Result<RawgGameDetail, String> {
+    rawg::get_game_details(rawg_id).await
+}
+
+// Bundled the same way as RAWG_API_KEY in rawg.rs — never exposed in the frontend bundle or a
+// Settings field the user has to fill in themselves.
+const WORKER_URL: &str = "https://proxy.backloggr.workers.dev";
+
+#[derive(Deserialize, Serialize, Clone)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+/// A resolved RAWG game plus the AI's short per-game "why this fits" note (chat results only —
+/// dashboard suggestions carry no per-game reason). `Deserialize` + `default` on `reason` keep
+/// the dashboard cache backward-compatible: rows written before this field existed still load.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RecommendedGame {
+    #[serde(flatten)]
+    pub game: RawgGameResult,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ChatRecommendResponse {
+    #[serde(rename = "clarify")]
+    Clarify {
+        question: String,
+        options: Option<Vec<String>>,
+        multi_select: bool,
+        // Real size of the AI's current candidate pool (None when unknown, e.g. fallbacks) —
+        // shown in the UI as honest narrowing progress, never a fabricated number.
+        candidate_count: Option<u32>,
+    },
+    #[serde(rename = "results")]
+    Results {
+        reasoning: String,
+        games: Vec<RecommendedGame>,
+    },
+}
+
+#[derive(Deserialize)]
+struct WorkerTitle {
+    title: String,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// The worker replies with one of two shapes (see `proxy/src/index.ts`'s `handleChat`); this
+/// mirrors that contract so `chat_recommend` can match on it directly instead of hand-parsing.
+/// `titles` are specific game names the model knows of (each with a short per-game fit note) —
+/// resolved individually via `rawg::resolve_titles_with_reasons` rather than a single keyword
+/// search, for real result variety. `options` lets a clarifying question offer quick-pick
+/// choices instead of requiring free text every time; `candidate_count` is the actual size of
+/// the model's remaining candidate pool while narrowing.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WorkerReply {
+    Search {
+        titles: Vec<WorkerTitle>,
+        reasoning: String,
+    },
+    Clarify {
+        question: String,
+        #[serde(default)]
+        options: Option<Vec<String>>,
+        #[serde(default, rename = "multiSelect")]
+        multi_select: bool,
+        #[serde(default, rename = "candidateCount")]
+        candidate_count: Option<u32>,
+    },
+}
+
+const MAX_RECOMMENDATIONS: usize = 8;
+
+/// Fetches every game name in the library (any status, including dropped — re-recommending a
+/// game the player abandoned reads just as fake as one they own) for the worker's exclusion
+/// list. Collected into an owned Vec so the mutex guard drops before any `.await`.
+fn owned_game_names(db: &DbState) -> Result<Vec<String>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT name FROM games")
+        .map_err(|e| e.to_string())?;
+    let names = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(names)
+}
+
+/// Forwards the chat turn to the bundled Worker URL, and — whenever the worker's code-side
+/// narrowing rule decides the candidate pool is focused enough — resolves the named titles
+/// against RAWG itself, so the RAWG API key never has to leave this binary. `questions_asked`
+/// counts clarifying rounds for the current ask (the worker caps the loop); the player's own
+/// library is sent as an exclusion list so nothing they already have comes back.
+#[tauri::command]
+pub async fn chat_recommend(
+    db: State<'_, DbState>,
+    message: String,
+    history: Vec<ChatMessage>,
+    questions_asked: u32,
+) -> Result<ChatRecommendResponse, String> {
+    let excluded = owned_game_names(&db)?;
+
+    let response = rawg::http_client()
+        .post(format!("{WORKER_URL}/chat"))
+        .json(&serde_json::json!({
+            "message": message,
+            "history": history,
+            "questionsAsked": questions_asked,
+            "excluded": excluded,
+        }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Recommendation service returned status {}",
+            response.status()
+        ));
+    }
+
+    let reply: WorkerReply = response.json().await.map_err(|e| e.to_string())?;
+
+    let result = match reply {
+        WorkerReply::Clarify {
+            question,
+            options,
+            multi_select,
+            candidate_count,
+        } => ChatRecommendResponse::Clarify {
+            question,
+            options,
+            multi_select,
+            candidate_count,
+        },
+        WorkerReply::Search { titles, reasoning } => {
+            let pairs: Vec<(String, Option<String>)> =
+                titles.into_iter().map(|t| (t.title, t.reason)).collect();
+            let games = rawg::resolve_titles_with_reasons(&pairs, MAX_RECOMMENDATIONS)
+                .await
+                .into_iter()
+                .map(|(game, reason)| RecommendedGame { game, reason })
+                .collect();
+            ChatRecommendResponse::Results { reasoning, games }
+        }
+    };
+
+    // Best-effort log to `recommendations` — a failure here shouldn't fail the user-facing reply.
+    if let Ok(conn) = db.0.lock() {
+        let response_json = serde_json::to_string(&result).unwrap_or_default();
+        let _ = conn.execute(
+            "INSERT INTO recommendations (prompt, response) VALUES (?1, ?2)",
+            (&message, &response_json),
+        );
+    }
+
+    Ok(result)
+}
+
+struct GenreSignal {
+    backlog_count: i64,
+    top_genre: Option<String>,
+    top_genre_playtime_seconds: i64,
+    favorites: Vec<(String, Option<String>)>,
+}
+
+/// Picks the genre the user has spent the most time playing (via each game's *primary* — first
+/// listed — genre) and a shortlist of favorite games to seed the dashboard's AI suggestion
+/// prompt: the top 3 by playtime, or (for a fresh backlog with no playtime yet) the 3 most
+/// recently added, so the widget isn't empty on day one.
+fn compute_genre_signal(conn: &rusqlite::Connection) -> Result<GenreSignal, String> {
+    struct Row {
+        name: String,
+        genre: Option<String>,
+        added_at: String,
+        total: i64,
+    }
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT g.name, g.genre, g.added_at, COALESCE(SUM(s.duration_seconds), 0) AS total
+             FROM games g
+             LEFT JOIN sessions s ON s.game_id = g.id AND s.duration_seconds IS NOT NULL
+             GROUP BY g.id",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(Row {
+                name: row.get(0)?,
+                genre: row.get(1)?,
+                added_at: row.get(2)?,
+                total: row.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    let backlog_count = rows.len() as i64;
+
+    let mut genre_playtime: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for row in &rows {
+        if let Some(primary) = row.genre.as_deref().and_then(|g| g.split(", ").next()) {
+            *genre_playtime.entry(primary.to_string()).or_insert(0) += row.total;
+        }
+    }
+    let (top_genre, top_genre_playtime_seconds) = genre_playtime
+        .into_iter()
+        .max_by_key(|(_, total)| *total)
+        .map(|(g, t)| (Some(g), t))
+        .unwrap_or((None, 0));
+
+    let mut played: Vec<&Row> = rows.iter().filter(|r| r.total > 0).collect();
+    played.sort_by(|a, b| b.total.cmp(&a.total));
+    let favorites = if !played.is_empty() {
+        played
+            .into_iter()
+            .take(3)
+            .map(|r| (r.name.clone(), r.genre.clone()))
+            .collect()
+    } else {
+        let mut by_added: Vec<&Row> = rows.iter().collect();
+        by_added.sort_by(|a, b| b.added_at.cmp(&a.added_at));
+        by_added
+            .into_iter()
+            .take(3)
+            .map(|r| (r.name.clone(), r.genre.clone()))
+            .collect()
+    };
+
+    Ok(GenreSignal {
+        backlog_count,
+        top_genre,
+        top_genre_playtime_seconds,
+        favorites,
+    })
+}
+
+const DASHBOARD_RECS_REFRESH_SECONDS: i64 = 5 * 3600;
+const DASHBOARD_RECS_PLAYTIME_SHIFT_SECONDS: i64 = 2 * 3600;
+
+/// Games picked from the player's backlog/playtime history rather than a chat prompt — shown as
+/// a Dashboard widget. Only re-queries the AI when something meaningful changed since the last
+/// generation (backlog size, top-played genre, or a big jump in that genre's playtime) or 5
+/// hours have passed, so opening the Dashboard repeatedly doesn't burn an AI call every time.
+#[tauri::command]
+pub async fn get_dashboard_recommendations(
+    db: State<'_, DbState>,
+) -> Result<ChatRecommendResponse, String> {
+    let signal = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        compute_genre_signal(&conn)?
+    };
+
+    if signal.backlog_count == 0 {
+        return Ok(ChatRecommendResponse::Results {
+            reasoning: "Add some games to your backlog to get personalized recommendations."
+                .to_string(),
+            games: vec![],
+        });
+    }
+
+    struct Cached {
+        generated_at: i64,
+        backlog_count: i64,
+        top_genre: Option<String>,
+        top_genre_playtime_seconds: i64,
+        reasoning: String,
+        games_json: String,
+    }
+
+    let cached = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT generated_at, backlog_count, top_genre, top_genre_playtime_seconds, reasoning, games_json
+             FROM dashboard_recommendations_cache WHERE id = 1",
+            [],
+            |row| {
+                Ok(Cached {
+                    generated_at: row.get(0)?,
+                    backlog_count: row.get(1)?,
+                    top_genre: row.get(2)?,
+                    top_genre_playtime_seconds: row.get(3)?,
+                    reasoning: row.get(4)?,
+                    games_json: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+    };
+
+    let now = chrono::Utc::now().timestamp();
+    let should_regenerate = match &cached {
+        None => true,
+        Some(c) => {
+            now - c.generated_at > DASHBOARD_RECS_REFRESH_SECONDS
+                || c.backlog_count != signal.backlog_count
+                || c.top_genre != signal.top_genre
+                || (signal.top_genre_playtime_seconds - c.top_genre_playtime_seconds)
+                    >= DASHBOARD_RECS_PLAYTIME_SHIFT_SECONDS
+        }
+    };
+
+    if !should_regenerate {
+        if let Some(c) = cached {
+            let games: Vec<RecommendedGame> = serde_json::from_str(&c.games_json).unwrap_or_default();
+            return Ok(ChatRecommendResponse::Results {
+                reasoning: c.reasoning,
+                games,
+            });
+        }
+    }
+
+    let favorites_json: Vec<serde_json::Value> = signal
+        .favorites
+        .iter()
+        .map(|(name, genre)| serde_json::json!({ "name": name, "genre": genre }))
+        .collect();
+    let excluded = owned_game_names(&db)?;
+
+    let response = rawg::http_client()
+        .post(format!("{WORKER_URL}/suggest"))
+        .json(&serde_json::json!({ "games": favorites_json, "excluded": excluded }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Recommendation service returned status {}",
+            response.status()
+        ));
+    }
+
+    #[derive(Deserialize)]
+    struct SuggestReply {
+        titles: Vec<String>,
+        reasoning: String,
+    }
+
+    let reply: SuggestReply = response.json().await.map_err(|e| e.to_string())?;
+    let games: Vec<RecommendedGame> = rawg::resolve_titles(&reply.titles, MAX_RECOMMENDATIONS)
+        .await
+        .into_iter()
+        .map(|game| RecommendedGame { game, reason: None })
+        .collect();
+
+    if let Ok(conn) = db.0.lock() {
+        let games_json = serde_json::to_string(&games).unwrap_or_default();
+        let _ = conn.execute(
+            "INSERT INTO dashboard_recommendations_cache
+                (id, generated_at, backlog_count, top_genre, top_genre_playtime_seconds, reasoning, games_json)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+                generated_at = excluded.generated_at,
+                backlog_count = excluded.backlog_count,
+                top_genre = excluded.top_genre,
+                top_genre_playtime_seconds = excluded.top_genre_playtime_seconds,
+                reasoning = excluded.reasoning,
+                games_json = excluded.games_json",
+            (
+                now,
+                signal.backlog_count,
+                &signal.top_genre,
+                signal.top_genre_playtime_seconds,
+                &reply.reasoning,
+                &games_json,
+            ),
+        );
+    }
+
+    Ok(ChatRecommendResponse::Results {
+        reasoning: reply.reasoning,
+        games,
+    })
+}
+
+/// Whether the app is registered to launch at login/startup. State lives in the OS itself
+/// (LaunchAgent plist on macOS, registry Run key on Windows) via tauri-plugin-autostart — not in
+/// the settings table, so an externally-removed entry reads back correctly as disabled.
+#[tauri::command]
+pub fn get_autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_autostart_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let autolaunch = app.autolaunch();
+    if enabled {
+        autolaunch.enable().map_err(|e| e.to_string())
+    } else {
+        autolaunch.disable().map_err(|e| e.to_string())
+    }
 }

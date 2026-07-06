@@ -8,6 +8,7 @@ import { Search } from "./components/Search/Search";
 import { Recommendations } from "./components/Recommendations/Recommendations";
 import { Clips } from "./components/Clips/Clips";
 import { Settings } from "./components/Settings/Settings";
+import { OverlayToast } from "./components/Overlay/OverlayToast";
 import { useAppStore } from "./store/useAppStore";
 
 interface SessionStarted {
@@ -36,6 +37,8 @@ function App() {
 
   return (
     <Routes>
+      {/* Rendered inside the separate in-game overlay window, not the main app shell. */}
+      <Route path="overlay" element={<OverlayToast />} />
       <Route element={<Shell />}>
         <Route index element={<Dashboard />} />
         <Route path="backlog" element={<Backlog />} />

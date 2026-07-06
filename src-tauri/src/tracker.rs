@@ -33,8 +33,10 @@ struct GameAutoAdded {
 }
 
 /// Strip a trailing `.exe` (case-insensitive) so Windows' suffixed process names
-/// compare equal to the extension-less names sysinfo reports on Mac.
-fn normalize_exe_name(name: &str) -> String {
+/// compare equal to the extension-less names sysinfo reports on Mac. Also used by
+/// `clipper::find_window_title_for_exe` to match a window's owning process against the stored
+/// exe_name regardless of suffix.
+pub(crate) fn normalize_exe_name(name: &str) -> String {
     let lower = name.to_lowercase();
     lower.strip_suffix(".exe").unwrap_or(&lower).to_string()
 }
@@ -293,11 +295,24 @@ pub fn start(app: AppHandle) {
         let mut active: HashMap<i64, i64> = HashMap::new();
 
         {
+            // Adopted-session exe name, resolved while the connection is held — capture sync
+            // happens after the lock drops.
+            let mut startup_exe: Option<String> = None;
             let running = running_exe_names(&mut sys);
             let db = app.state::<DbState>();
             let conn = db.0.lock();
             if let Ok(conn) = conn {
                 reconcile_dangling_sessions(&app, &conn, &running, &mut active);
+                if let Some(&game_id) = active.keys().next() {
+                    startup_exe = conn
+                        .query_row("SELECT exe_name FROM games WHERE id = ?1", [game_id], |row| row.get(0))
+                        .ok();
+                }
+            }
+            // A game was already running when the app launched (adopted above) — start capture
+            // for it now rather than waiting for the first poll tick.
+            if !active.is_empty() {
+                crate::clipper::ensure_capture(&app, startup_exe.as_deref());
             }
         }
 
@@ -327,75 +342,97 @@ pub fn start(app: AppHandle) {
             };
 
             // Auto-discover games installed via a known storefront that were launched but never
-            // manually added — the network lookup happens before any DB lock is taken.
+            // manually added — the network lookup happens before any DB lock is taken. Their exe
+            // names are remembered for this poll's capture sync below, since `tracked_games` was
+            // fetched before they were registered.
             let tracked_exe_names: HashSet<String> = tracked_games
                 .iter()
                 .map(|(_, exe)| normalize_exe_name(exe))
                 .collect();
+            let mut newly_registered_exe: Option<String> = None;
             for (exe_name, guessed_name) in detect_unregistered_games(&sys, &tracked_exe_names) {
                 auto_register_and_track(&app, &mut active, &exe_name, &guessed_name).await;
+                newly_registered_exe = Some(exe_name);
             }
 
-            let db = app.state::<DbState>();
-            let conn = match db.0.lock() {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
+            {
+                let db = app.state::<DbState>();
+                let Ok(conn) = db.0.lock() else { continue };
 
-            for (game_id, exe_name) in &tracked_games {
-                let is_running = running.contains(&normalize_exe_name(exe_name));
-                let already_tracking = active.contains_key(game_id);
+                for (game_id, exe_name) in &tracked_games {
+                    let is_running = running.contains(&normalize_exe_name(exe_name));
+                    let already_tracking = active.contains_key(game_id);
 
-                if is_running && already_tracking {
-                    // Heartbeat: if this process dies without a clean shutdown, the next
-                    // startup's reconciliation pass closes the session here, not at started_at.
-                    if let Some(session_id) = active.get(game_id) {
-                        let _ = conn.execute(
-                            "UPDATE sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?1",
-                            [session_id],
-                        );
-                    }
-                } else if is_running && !already_tracking {
-                    // A game the user actually launched is "playing" almost by definition — flip
-                    // it out of Backlog/Wishlist automatically so the status field tracks reality
-                    // instead of requiring a manual dropdown update. `completed`/`dropped` are
-                    // deliberate user calls, so those are left alone (replaying a completed game
-                    // doesn't un-complete it).
-                    let _ = conn.execute(
-                        "UPDATE games SET status = 'playing' WHERE id = ?1 AND status NOT IN ('completed', 'dropped')",
-                        [game_id],
-                    );
-
-                    let result = conn.query_row(
-                        "INSERT INTO sessions (game_id, started_at, last_seen_at, auto_tracked) VALUES (?1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1) RETURNING id, started_at",
-                        [game_id],
-                        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-                    );
-                    if let Ok((session_id, started_at)) = result {
-                        active.insert(*game_id, session_id);
-                        let _ = app.emit(
-                            "session-started",
-                            SessionStarted { game_id: *game_id, session_id, started_at },
-                        );
-                    }
-                } else if !is_running && already_tracking {
-                    if let Some(session_id) = active.remove(game_id) {
-                        let duration: Result<i64, _> = conn.query_row(
-                            "UPDATE sessions SET ended_at = CURRENT_TIMESTAMP,
-                                duration_seconds = CAST((julianday(CURRENT_TIMESTAMP) - julianday(started_at)) * 86400 AS INTEGER)
-                             WHERE id = ?1
-                             RETURNING duration_seconds",
-                            [session_id],
-                            |row| row.get(0),
-                        );
-                        if let Ok(duration_seconds) = duration {
-                            let _ = app.emit(
-                                "session-ended",
-                                SessionEnded { game_id: *game_id, session_id, duration_seconds },
+                    if is_running && already_tracking {
+                        // Heartbeat: if this process dies without a clean shutdown, the next
+                        // startup's reconciliation pass closes the session here, not at started_at.
+                        if let Some(session_id) = active.get(game_id) {
+                            let _ = conn.execute(
+                                "UPDATE sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?1",
+                                [session_id],
                             );
+                        }
+                    } else if is_running && !already_tracking {
+                        // A game the user actually launched is "playing" almost by definition —
+                        // flip it out of Backlog/Wishlist automatically so the status field
+                        // tracks reality instead of requiring a manual dropdown update.
+                        // `completed`/`dropped` are deliberate user calls, so those are left
+                        // alone (replaying a completed game doesn't un-complete it).
+                        let _ = conn.execute(
+                            "UPDATE games SET status = 'playing' WHERE id = ?1 AND status NOT IN ('completed', 'dropped')",
+                            [game_id],
+                        );
+
+                        let result = conn.query_row(
+                            "INSERT INTO sessions (game_id, started_at, last_seen_at, auto_tracked) VALUES (?1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1) RETURNING id, started_at",
+                            [game_id],
+                            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                        );
+                        if let Ok((session_id, started_at)) = result {
+                            active.insert(*game_id, session_id);
+                            let _ = app.emit(
+                                "session-started",
+                                SessionStarted { game_id: *game_id, session_id, started_at },
+                            );
+                        }
+                    } else if !is_running && already_tracking {
+                        if let Some(session_id) = active.remove(game_id) {
+                            let duration: Result<i64, _> = conn.query_row(
+                                "UPDATE sessions SET ended_at = CURRENT_TIMESTAMP,
+                                    duration_seconds = CAST((julianday(CURRENT_TIMESTAMP) - julianday(started_at)) * 86400 AS INTEGER)
+                                 WHERE id = ?1
+                                 RETURNING duration_seconds",
+                                [session_id],
+                                |row| row.get(0),
+                            );
+                            if let Ok(duration_seconds) = duration {
+                                let _ = app.emit(
+                                    "session-ended",
+                                    SessionEnded { game_id: *game_id, session_id, duration_seconds },
+                                );
+                            }
                         }
                     }
                 }
+            }
+
+            // Capture follows "any session is active", reconciled once per poll (after the DB
+            // lock drops — spawning/killing ffmpeg shouldn't block other DB users). This one call
+            // site covers start-on-launch, stop-when-the-last-game-quits, crash restarts, and
+            // Windows window-scope upgrades — see clipper::ensure_capture. Capture targets one
+            // window at a time, so a second game quitting never cuts off a still-playing first.
+            if active.is_empty() {
+                crate::clipper::stop(&app);
+            } else {
+                let exe = tracked_games
+                    .iter()
+                    .find(|(id, _)| active.contains_key(id))
+                    .map(|(_, e)| e.as_str())
+                    .or(newly_registered_exe.as_deref());
+                // Focus sampling/pausing lives in clipper's own 1s watcher (spawned by
+                // ensure_capture for non-window-scoped captures) — the 5s poll here is too
+                // coarse to catch quick alt-tabs.
+                crate::clipper::ensure_capture(&app, exe);
             }
         }
     });
