@@ -6,6 +6,7 @@ mod db;
 mod loopback;
 mod overlay;
 mod rawg;
+mod steam;
 mod tracker;
 mod tray;
 
@@ -124,7 +125,10 @@ pub fn run() {
             clipper::get_mic_enabled,
             clipper::set_mic_enabled,
             commands::get_autostart_enabled,
-            commands::set_autostart_enabled
+            commands::set_autostart_enabled,
+            commands::fetch_steam_library,
+            commands::import_steam_games,
+            commands::get_steam_profile
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

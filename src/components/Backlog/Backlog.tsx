@@ -77,10 +77,16 @@ export function Backlog() {
       loadGames();
       loadPlaytime();
     });
+    // One event for the whole Steam import batch (fired from Settings) — per-game notices
+    // would spam hundreds of banners for a big library.
+    const unlistenImported = listen("steam-import-done", () => {
+      loadGames();
+    });
     return () => {
       unlistenAdded.then((f) => f());
       unlistenStarted.then((f) => f());
       unlistenEnded.then((f) => f());
+      unlistenImported.then((f) => f());
     };
   }, []);
 

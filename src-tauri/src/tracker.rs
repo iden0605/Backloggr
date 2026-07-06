@@ -156,17 +156,7 @@ async fn auto_register_and_track(
         search_query.clone()
     };
 
-    let rawg_match = rawg::search_games(&search_query).await.ok().and_then(|results| {
-        // RAWG's relevance ranking usually puts the right game first, but prefer an exact
-        // (case-insensitive) name match when one exists rather than trusting ordering blindly.
-        let exact = results
-            .iter()
-            .position(|r| r.name.eq_ignore_ascii_case(&search_query));
-        match exact {
-            Some(i) => results.into_iter().nth(i),
-            None => results.into_iter().next(),
-        }
-    });
+    let rawg_match = rawg::best_match(&search_query).await;
 
     let db = app.state::<DbState>();
     let conn = match db.0.lock() {

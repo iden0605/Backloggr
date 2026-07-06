@@ -110,5 +110,10 @@ pub fn init(app_data_dir: &PathBuf) -> Connection {
         "ended_estimated BOOLEAN DEFAULT 0",
     );
 
+    // steam_appid: set on games imported (or linked) via the Steam library import, so a
+    // re-import can skip everything already brought in even when the RAWG match differs
+    // between runs.
+    add_column_if_missing(&conn, "games", "steam_appid", "steam_appid INTEGER");
+
     conn
 }
