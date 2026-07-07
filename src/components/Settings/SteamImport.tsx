@@ -80,7 +80,7 @@ export function SteamImportSection() {
         <button
           onClick={fetchLibrary}
           disabled={fetching || !profile.trim()}
-          className="shrink-0 rounded-md bg-text-hi px-3.5 py-1.5 text-[13px] font-medium text-bg transition-opacity hover:opacity-90 disabled:opacity-40"
+          className="shrink-0 rounded-md bg-text-hi px-3.5 py-1.5 text-[13px] font-medium text-bg transition-all duration-150 hover:opacity-85 enabled:active:scale-[0.98] disabled:opacity-40"
         >
           {fetching ? "Fetching…" : "Fetch library"}
         </button>
@@ -203,7 +203,7 @@ function SteamImportModal({
             </p>
             <button
               onClick={onClose}
-              className="mt-2 rounded-md bg-text-hi px-4 py-1.5 text-[13px] font-medium text-bg transition-opacity hover:opacity-90"
+              className="mt-2 rounded-md bg-text-hi px-4 py-1.5 text-[13px] font-medium text-bg transition-all duration-150 hover:opacity-85 active:scale-[0.98]"
             >
               Done
             </button>
@@ -304,7 +304,7 @@ function SteamImportModal({
               <button
                 onClick={runImport}
                 disabled={selected.size === 0}
-                className="shrink-0 rounded-md bg-text-hi px-4 py-1.5 text-[13px] font-medium text-bg transition-opacity hover:opacity-90 disabled:opacity-40"
+                className="shrink-0 rounded-md bg-text-hi px-4 py-1.5 text-[13px] font-medium text-bg transition-all duration-150 hover:opacity-85 enabled:active:scale-[0.98] disabled:opacity-40"
               >
                 Import {selected.size} game{selected.size === 1 ? "" : "s"}
               </button>

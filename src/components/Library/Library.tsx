@@ -197,7 +197,7 @@ export function Library() {
             cta={
               <Link
                 to="/discover"
-                className="rounded-lg bg-text-hi px-3.5 py-2 text-xs font-semibold text-bg transition-opacity hover:opacity-85"
+                className="rounded-lg bg-text-hi px-3.5 py-2 text-xs font-semibold text-bg transition-all duration-150 hover:opacity-85 active:scale-[0.98]"
               >
                 Find a game
               </Link>
@@ -215,7 +215,7 @@ export function Library() {
                 <button
                   key={t}
                   onClick={() => setTab(t)}
-                  className={`rounded-lg px-3.5 py-1.5 text-xs font-semibold capitalize transition-colors ${
+                  className={`rounded-lg px-3.5 py-1.5 text-xs font-semibold capitalize transition-all duration-150 active:scale-[0.97] ${
                     tab === t ? "bg-surface-alt text-text-hi" : "text-text-lo hover:text-text-hi"
                   }`}
                 >
@@ -239,7 +239,7 @@ export function Library() {
                 <button
                   key={value}
                   onClick={() => setFilter(value)}
-                  className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+                  className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-all duration-150 active:scale-[0.97] ${
                     filter === value
                       ? "border-text-hi bg-text-hi font-semibold text-bg"
                       : "border-border-strong text-text-lo hover:border-text-hi hover:text-text-hi"
@@ -302,7 +302,7 @@ function LibraryCard({
   return (
     <button
       onClick={onOpen}
-      className="group relative aspect-[2/3] overflow-hidden rounded-xl border border-border text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-border-strong focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent/60"
+      className="group relative aspect-[2/3] overflow-hidden rounded-xl border border-border text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-border-strong"
     >
       {game.coverUrl ? (
         <img

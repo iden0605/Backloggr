@@ -71,7 +71,7 @@ export function Discover() {
           <button
             type="button"
             onClick={askAi}
-            className="flex shrink-0 items-center gap-1.5 rounded-xl border border-border-strong px-3.5 py-2 text-[13px] font-semibold text-text-hi transition-colors hover:border-accent/50 hover:text-accent-hover"
+            className="flex shrink-0 items-center gap-1.5 rounded-xl border border-border-strong px-3.5 py-2 text-[13px] font-semibold text-text-hi transition-all duration-150 hover:border-accent/50 hover:text-accent-hover active:scale-[0.98]"
           >
             <Sparkles className="h-3.5 w-3.5 text-accent" />
             Ask Shelby
@@ -79,7 +79,7 @@ export function Discover() {
           <button
             type="submit"
             disabled={loading}
-            className="flex shrink-0 items-center gap-2 rounded-xl bg-text-hi px-[18px] py-2 text-[13px] font-semibold text-bg transition-opacity hover:opacity-85 disabled:opacity-50"
+            className="flex shrink-0 items-center gap-2 rounded-xl bg-text-hi px-[18px] py-2 text-[13px] font-semibold text-bg transition-all duration-150 hover:opacity-85 enabled:active:scale-[0.98] disabled:opacity-50"
           >
             {loading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             {loading ? "Searching..." : "Search"}
@@ -244,7 +244,7 @@ function ForYouSection({
           <button
             onClick={loadMore}
             disabled={loadingMore}
-            className="flex items-center gap-2 rounded-xl border border-border px-4 py-2 text-[12.5px] font-medium text-text-lo transition-colors hover:border-border-strong hover:text-text-hi disabled:opacity-50"
+            className="flex items-center gap-2 rounded-xl border border-border px-4 py-2 text-[12.5px] font-medium text-text-lo transition-all duration-150 hover:border-border-strong hover:text-text-hi enabled:active:scale-[0.98] disabled:opacity-50"
           >
             {loadingMore && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             {loadingMore ? "Finding more..." : "Load more"}
@@ -252,7 +252,7 @@ function ForYouSection({
         )}
         <button
           onClick={refineWithShelby}
-          className="flex items-center gap-1.5 rounded-xl border border-border-strong px-4 py-2 text-[12.5px] font-semibold text-text-hi transition-colors hover:border-accent/50 hover:text-accent-hover"
+          className="flex items-center gap-1.5 rounded-xl border border-border-strong px-4 py-2 text-[12.5px] font-semibold text-text-hi transition-all duration-150 hover:border-accent/50 hover:text-accent-hover active:scale-[0.98]"
         >
           <Sparkles className="h-3.5 w-3.5 text-accent" />
           Refine with Shelby

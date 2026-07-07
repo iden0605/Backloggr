@@ -384,7 +384,7 @@ export function DiscoverChat() {
       <div className="flex shrink-0 items-center gap-4">
         <button
           onClick={() => navigate("/discover")}
-          className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-[12.5px] font-medium text-text-lo transition-colors hover:border-border-strong hover:text-text-hi"
+          className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-[12.5px] font-medium text-text-lo transition-all duration-150 hover:border-border-strong hover:text-text-hi active:scale-[0.98]"
         >
           <ArrowLeft className="h-3.5 w-3.5" />
           Back to browse
@@ -408,7 +408,7 @@ export function DiscoverChat() {
             <div className="flex items-stretch gap-2">
               <button
                 onClick={startNewChat}
-                className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-text-hi px-3 py-2 text-[12.5px] font-semibold text-bg transition-opacity hover:opacity-85"
+                className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-text-hi px-3 py-2 text-[12.5px] font-semibold text-bg transition-all duration-150 hover:opacity-85 active:scale-[0.98]"
               >
                 <Plus className="h-3.5 w-3.5" />
                 New chat
@@ -416,7 +416,7 @@ export function DiscoverChat() {
               <button
                 onClick={toggleSidebar}
                 title="Hide history"
-                className="flex w-9 shrink-0 items-center justify-center rounded-lg border border-border text-text-lo transition-colors hover:border-border-strong hover:text-text-hi"
+                className="flex w-9 shrink-0 items-center justify-center rounded-lg border border-border text-text-lo transition-all duration-150 hover:border-border-strong hover:text-text-hi active:scale-95"
               >
                 <PanelLeftClose className="h-4 w-4" />
               </button>
@@ -479,14 +479,14 @@ export function DiscoverChat() {
             <button
               onClick={toggleSidebar}
               title="Show history"
-              className="flex h-9 w-9 items-center justify-center rounded-lg border border-border text-text-lo transition-colors hover:border-border-strong hover:text-text-hi"
+              className="flex h-9 w-9 items-center justify-center rounded-lg border border-border text-text-lo transition-all duration-150 hover:border-border-strong hover:text-text-hi active:scale-95"
             >
               <PanelLeftOpen className="h-4 w-4" />
             </button>
             <button
               onClick={startNewChat}
               title="New chat"
-              className="flex h-9 w-9 items-center justify-center rounded-lg border border-border text-text-lo transition-colors hover:border-border-strong hover:text-text-hi"
+              className="flex h-9 w-9 items-center justify-center rounded-lg border border-border text-text-lo transition-all duration-150 hover:border-border-strong hover:text-text-hi active:scale-95"
             >
               <Plus className="h-4 w-4" />
             </button>
@@ -515,7 +515,7 @@ export function DiscoverChat() {
                           key={prompt.label}
                           onClick={() => send(prompt.message)}
                           style={{ animationDelay: `${100 + i * 40}ms` }}
-                          className="animate-fade-up rounded-full border border-border bg-surface px-3.5 py-1.5 text-[12.5px] font-medium text-text-hi transition-all duration-150 hover:border-accent/40 hover:bg-accent/10 hover:text-accent-hover"
+                          className="animate-fade-up rounded-full border border-border bg-surface px-3.5 py-1.5 text-[12.5px] font-medium text-text-hi transition-all duration-150 hover:border-accent/40 hover:bg-accent/10 hover:text-accent-hover active:scale-[0.96]"
                         >
                           {prompt.label}
                         </button>
@@ -532,7 +532,7 @@ export function DiscoverChat() {
                             key={name}
                             onClick={() => send(`I loved ${name} — what should I play next?`)}
                             style={{ animationDelay: `${340 + i * 40}ms` }}
-                            className="animate-fade-up flex items-center gap-1.5 rounded-full border border-border bg-surface px-3.5 py-1.5 text-[12.5px] font-medium text-text-hi transition-all duration-150 hover:border-accent/40 hover:bg-accent/10 hover:text-accent-hover"
+                            className="animate-fade-up flex items-center gap-1.5 rounded-full border border-border bg-surface px-3.5 py-1.5 text-[12.5px] font-medium text-text-hi transition-all duration-150 hover:border-accent/40 hover:bg-accent/10 hover:text-accent-hover active:scale-[0.96]"
                           >
                             <Sparkles className="h-3 w-3 text-accent" />
                             More like {name}
@@ -591,7 +591,7 @@ export function DiscoverChat() {
                                       }
                                       disabled={loading}
                                       style={live ? { animationDelay: `${80 + optionIdx * 40}ms` } : undefined}
-                                      className={`flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-[12.5px] font-medium transition-all duration-150 disabled:opacity-50 ${fadeUp} ${
+                                      className={`flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-[12.5px] font-medium transition-all duration-150 enabled:active:scale-[0.96] disabled:opacity-50 ${fadeUp} ${
                                         selected
                                           ? "border-accent/50 bg-accent/15 text-accent"
                                           : "border-border bg-surface text-text-hi hover:border-accent/30 hover:bg-surface-alt"
@@ -612,7 +612,7 @@ export function DiscoverChat() {
                                       ? { animationDelay: `${80 + turn.assistantOptions.length * 40}ms` }
                                       : undefined
                                   }
-                                  className={`rounded-full bg-text-hi px-4 py-1.5 text-[12.5px] font-semibold text-bg transition-opacity hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-30 ${fadeUp}`}
+                                  className={`rounded-full bg-text-hi px-4 py-1.5 text-[12.5px] font-semibold text-bg transition-all duration-150 hover:opacity-85 enabled:active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-30 ${fadeUp}`}
                                 >
                                   Continue
                                 </button>

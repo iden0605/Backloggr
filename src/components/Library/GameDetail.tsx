@@ -184,7 +184,7 @@ export function GameDetail() {
             <div className="flex gap-2.5 pb-1">
               <button
                 onClick={() => setStatus(completed ? "backlog" : "completed")}
-                className={`flex items-center gap-1.5 rounded-[10px] border px-3.5 py-2 text-[12.5px] font-semibold transition-colors ${
+                className={`flex items-center gap-1.5 rounded-[10px] border px-3.5 py-2 text-[12.5px] font-semibold transition-all duration-150 active:scale-[0.98] ${
                   completed
                     ? "border-success/40 text-success"
                     : "border-border-strong text-text-lo hover:border-text-hi hover:text-text-hi"
@@ -195,7 +195,7 @@ export function GameDetail() {
               </button>
               <button
                 onClick={() => setStatus(notForMe ? "backlog" : "dropped")}
-                className={`rounded-[10px] border px-3.5 py-2 text-[12.5px] font-semibold transition-colors ${
+                className={`rounded-[10px] border px-3.5 py-2 text-[12.5px] font-semibold transition-all duration-150 active:scale-[0.98] ${
                   notForMe
                     ? "border-border-strong bg-surface-alt text-text-hi"
                     : "border-border-strong text-text-lo hover:border-text-hi hover:text-text-hi"
@@ -206,7 +206,7 @@ export function GameDetail() {
               {game.status === "wishlist" && (
                 <button
                   onClick={() => setStatus("backlog")}
-                  className="rounded-[10px] bg-text-hi px-3.5 py-2 text-[12.5px] font-semibold text-bg transition-opacity hover:opacity-85"
+                  className="rounded-[10px] bg-text-hi px-3.5 py-2 text-[12.5px] font-semibold text-bg transition-all duration-150 hover:opacity-85 active:scale-[0.98]"
                 >
                   Move to library
                 </button>
@@ -337,7 +337,7 @@ export function GameDetail() {
             />
             <button
               onClick={remove}
-              className="ml-auto rounded-lg border border-border-strong/60 px-3 py-1.5 text-xs font-medium text-text-lo transition-colors hover:border-danger/40 hover:bg-danger/10 hover:text-danger"
+              className="ml-auto rounded-lg border border-border-strong/60 px-3 py-1.5 text-xs font-medium text-text-lo transition-all duration-150 hover:border-danger/40 hover:bg-danger/10 hover:text-danger active:scale-[0.98]"
             >
               Remove from library
             </button>

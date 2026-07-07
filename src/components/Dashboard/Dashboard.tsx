@@ -285,7 +285,7 @@ function MostPlayedCard({ weekGames }: { weekGames: GamePlaytime[] }) {
 
 function GameShelfCard({ game }: { game: GamePlaytime }) {
   return (
-    <div className="group w-44 shrink-0 cursor-default">
+    <Link to={`/library/${game.gameId}`} className="group w-44 shrink-0 rounded-lg">
       {game.coverUrl ? (
         <img
           src={game.coverUrl}
@@ -297,7 +297,7 @@ function GameShelfCard({ game }: { game: GamePlaytime }) {
       )}
       <p className="mt-2.5 truncate text-[13px] font-medium text-text-hi">{game.name}</p>
       <p className="mt-0.5 font-mono text-[11px] text-text-lo">{formatDuration(game.totalSeconds)}</p>
-    </div>
+    </Link>
   );
 }
 
@@ -400,7 +400,7 @@ export function Dashboard() {
           </p>
           <Link
             to="/discover"
-            className="mt-6 inline-block rounded-lg bg-text-hi px-4 py-2 text-[12.5px] font-semibold text-bg transition-opacity hover:opacity-85"
+            className="mt-6 inline-block rounded-lg bg-text-hi px-4 py-2 text-[12.5px] font-semibold text-bg transition-all duration-150 hover:opacity-85 active:scale-[0.98]"
           >
             Find a game
           </Link>

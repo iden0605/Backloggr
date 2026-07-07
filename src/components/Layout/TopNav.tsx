@@ -50,7 +50,10 @@ export function TopNav({ solid }: { solid: boolean }) {
       )}
 
       <div className="relative flex h-14 items-center gap-8 px-7">
-        <NavLink to="/" className="page-title select-none text-[15px] leading-none">
+        <NavLink
+          to="/"
+          className="page-title select-none text-[15px] leading-none transition-opacity duration-150 hover:opacity-80"
+        >
           Back<span className="text-accent">loggr</span>
         </NavLink>
 
