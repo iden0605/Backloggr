@@ -42,6 +42,8 @@ interface CurrentlyPlaying {
   name: string;
   coverUrl: string | null;
   startedAt: string;
+  /** Other games that also have an open session — the hero shows the most recent + this count. */
+  alsoPlaying: number;
 }
 
 interface LibraryGame extends Game {
@@ -456,6 +458,11 @@ export function Dashboard() {
             <span>this session</span>
             {lifetimeLine(currentlyPlaying.gameId) && (
               <span>· {lifetimeLine(currentlyPlaying.gameId)}</span>
+            )}
+            {currentlyPlaying.alsoPlaying > 0 && (
+              <span>
+                · +{currentlyPlaying.alsoPlaying} more running
+              </span>
             )}
           </p>
         </Hero>

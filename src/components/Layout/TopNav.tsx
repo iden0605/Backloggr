@@ -14,6 +14,7 @@ const navItems = [
 interface CurrentlyPlaying {
   gameId: number;
   name: string;
+  alsoPlaying: number;
 }
 
 /**
@@ -30,8 +31,10 @@ export function TopNav({ solid }: { solid: boolean }) {
         .then(setNowPlaying)
         .catch(() => setNowPlaying(null));
     load();
+    // Both events RELOAD instead of clearing — with several games open at once, one of them
+    // quitting must fall the indicator back to the next still-running game, not blank it.
     const unlistenStarted = listen("session-started", load);
-    const unlistenEnded = listen("session-ended", () => setNowPlaying(null));
+    const unlistenEnded = listen("session-ended", load);
     return () => {
       unlistenStarted.then((f) => f());
       unlistenEnded.then((f) => f());
@@ -89,6 +92,11 @@ export function TopNav({ solid }: { solid: boolean }) {
             <span className="truncate text-[12.5px] font-medium text-text-hi/90">
               {nowPlaying.name}
             </span>
+            {nowPlaying.alsoPlaying > 0 && (
+              <span className="shrink-0 text-[11px] text-text-lo">
+                +{nowPlaying.alsoPlaying} more
+              </span>
+            )}
           </div>
         )}
       </div>

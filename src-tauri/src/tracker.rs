@@ -60,6 +60,67 @@ const LIBRARY_MARKERS: &[&str] = &[
     "riot games",
 ];
 
+/// Executable-name fragments (matched against the normalized, `.exe`-less, lowercased name) that
+/// mark a process as launcher/storefront plumbing rather than a game, even though it lives under
+/// a storefront library folder. Live-testing example: `RiotClientServices.exe` (the always-running
+/// Riot client under `Riot Games\Riot Client\`) got auto-added and RAWG-matched to an unrelated
+/// game ("GRITO GRIOT"). These never open a session or a library row.
+const NON_GAME_EXE_PATTERNS: &[&str] = &[
+    // Riot plumbing: the client itself, its UX/render helpers, and the Vanguard anti-cheat.
+    "riotclient",
+    "leagueclient", // League's launcher — the game itself is "League of Legends.exe"
+    "vanguard",
+    "vgtray",
+    "vgc",
+    // Storefront clients/launchers that can sit inside library-marker folders.
+    "epicgameslauncher",
+    "epicwebhelper",
+    "epiconlineservices",
+    "galaxyclient",
+    "battle.net",
+    "agent", // Battle.net's background updater ("Agent.exe")
+    "steamwebhelper",
+    "gameoverlayui",
+    // Generic helper/service processes games and launchers ship alongside the real exe.
+    "launcher",
+    "crashhandler",
+    "crashpad",
+    "crashreport",
+    "crashsender",
+    "webhelper",
+    "easyanticheat",
+    "battleye",
+    "beservice",
+    "anticheat",
+    "overlay",
+    "updater",
+    "installer",
+    "uninstall",
+    "setup",
+    "redist",
+    "dxsetup",
+    "vcredist",
+    "helper",
+    "service",
+];
+
+/// Install-folder names (the path component right after a library marker) that hold launcher
+/// infrastructure, not games — e.g. `Riot Games\Riot Client\`, `Epic Games\Launcher\`.
+const NON_GAME_INSTALL_FOLDERS: &[&str] = &[
+    "riot client",
+    "launcher",
+    "epic online services",
+    "directxredist",
+    "_commonredist",
+    "tools",
+];
+
+/// Whether a normalized exe name looks like launcher/anti-cheat/helper plumbing rather than an
+/// actual game — see `NON_GAME_EXE_PATTERNS`.
+fn is_non_game_exe(exe_norm: &str) -> bool {
+    NON_GAME_EXE_PATTERNS.iter().any(|p| exe_norm.contains(p))
+}
+
 /// Best-effort guess at a human-readable game name from its install path, e.g.
 /// `.../steamapps/common/Dave the Diver/DaveTheDiver.app` -> `"Dave the Diver"`. Only ever used
 /// to seed a RAWG search for a game we don't already know about — never trusted as final data.
@@ -74,6 +135,15 @@ fn guess_game_name_from_path(path: &Path) -> Option<String> {
         let lower = component.to_lowercase();
         if LIBRARY_MARKERS.contains(&lower.as_str()) {
             if let Some(next) = components.get(i + 1) {
+                // The next component must be a game's install DIRECTORY. An exe sitting directly
+                // inside the marker folder (e.g. `Battle.net\Battle.net.exe`) is launcher
+                // plumbing, not a game install.
+                if i + 1 == components.len() - 1 {
+                    return None;
+                }
+                if NON_GAME_INSTALL_FOLDERS.contains(&next.to_lowercase().as_str()) {
+                    return None;
+                }
                 return Some(next.clone());
             }
         }
@@ -128,6 +198,9 @@ fn detect_unregistered_games(
     for process in sys.processes().values() {
         let raw_name = process.name().to_string();
         let normalized = normalize_exe_name(&raw_name);
+        if is_non_game_exe(&normalized) {
+            continue;
+        }
         if tracked_exe_names.contains(&normalized) || !seen.insert(normalized) {
             continue;
         }

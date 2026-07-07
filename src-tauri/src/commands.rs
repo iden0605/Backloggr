@@ -394,6 +394,10 @@ pub struct CurrentlyPlaying {
     pub name: String,
     pub cover_url: Option<String>,
     pub started_at: String,
+    /// How many OTHER games also have an open session right now. Multiple games running at once
+    /// is normal (launcher-spawned games, two games mid-swap) — the hero/nav shows the most
+    /// recently launched one plus a "+N more" so the display isn't silently lying.
+    pub also_playing: i64,
 }
 
 /// Reads the live "currently playing" state straight from the DB (the open session with no
@@ -405,7 +409,8 @@ pub struct CurrentlyPlaying {
 pub fn get_currently_playing(db: State<DbState>) -> Result<Option<CurrentlyPlaying>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     conn.query_row(
-        "SELECT g.id, g.name, g.cover_url, s.started_at
+        "SELECT g.id, g.name, g.cover_url, s.started_at,
+                (SELECT COUNT(*) - 1 FROM sessions WHERE ended_at IS NULL) AS also_playing
          FROM sessions s JOIN games g ON g.id = s.game_id
          WHERE s.ended_at IS NULL
          ORDER BY s.started_at DESC LIMIT 1",
@@ -416,6 +421,7 @@ pub fn get_currently_playing(db: State<DbState>) -> Result<Option<CurrentlyPlayi
                 name: row.get(1)?,
                 cover_url: row.get(2)?,
                 started_at: row.get(3)?,
+                also_playing: row.get::<_, i64>(4)?.max(0),
             })
         },
     )
