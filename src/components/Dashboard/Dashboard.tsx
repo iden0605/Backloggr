@@ -3,14 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Link } from "react-router-dom";
 import { Clapperboard, Sparkles, Timer } from "lucide-react";
-import {
-  Bar,
-  BarChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 import { Game } from "../../store/useAppStore";
 
 type Period = "day" | "week" | "month" | "all";
@@ -41,6 +33,8 @@ interface DashboardStats {
   gamesPlayedCount: number;
   gamesPlayed: GamePlaytime[];
   playtimeLast7Days: DailyPlaytime[];
+  prevWeekPlaytimeSeconds: number;
+  weekGames: GamePlaytime[];
 }
 
 interface CurrentlyPlaying {
@@ -78,9 +72,9 @@ function formatElapsed(seconds: number): string {
   return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
-function formatDayLabel(date: string): string {
+function dayLabel(date: string, style: "short" | "narrow"): string {
   const d = new Date(`${date}T00:00:00`);
-  return d.toLocaleDateString(undefined, { weekday: "short" });
+  return d.toLocaleDateString(undefined, { weekday: style });
 }
 
 function SessionTimer({ startedAt }: { startedAt: string }) {
@@ -159,21 +153,132 @@ function Hero({
   );
 }
 
-function StatStrip({ stats, periodLabel }: { stats: DashboardStats; periodLabel: string }) {
-  const cells = [
-    { value: formatDuration(stats.totalPlaytimeSeconds), label: `Played · ${periodLabel}` },
-    { value: String(stats.gamesInLibrary), label: "In library" },
-    { value: String(stats.gamesPlayedCount), label: "Played" },
-    { value: String(stats.gamesCompleted), label: "Completed" },
-  ];
+/** Axis-free 7-day sparkline: quiet rust bars, day initials, exact value on hover only. */
+function WeekSparkline({ days }: { days: DailyPlaytime[] }) {
+  const max = Math.max(...days.map((d) => d.totalSeconds));
   return (
-    <div className="grid grid-cols-2 divide-border border-y border-border sm:grid-cols-4 sm:divide-x">
-      {cells.map((cell) => (
-        <div key={cell.label} className="px-5 py-5 first:pl-0">
-          <p className="text-[26px] font-bold tabular-nums tracking-tight text-text-hi">{cell.value}</p>
-          <p className="shelf-label mt-1">{cell.label}</p>
-        </div>
-      ))}
+    <div>
+      <div className="mt-5 flex h-14 items-end gap-1.5">
+        {days.map((d) => {
+          const barHeight =
+            d.totalSeconds === 0 ? 3 : Math.max(5, (d.totalSeconds / max) * 52);
+          return (
+            <div
+              key={d.date}
+              className="group relative flex h-full flex-1 flex-col items-center justify-end"
+            >
+              <span className="pointer-events-none absolute -top-6 whitespace-nowrap rounded-md border border-border-strong bg-surface-alt px-1.5 py-0.5 font-mono text-[10px] text-text-hi opacity-0 transition-opacity group-hover:opacity-100">
+                {dayLabel(d.date, "short")} ·{" "}
+                {d.totalSeconds > 0 ? formatDuration(d.totalSeconds) : "0m"}
+              </span>
+              <div
+                className="w-full rounded-t bg-accent/80 transition-colors group-hover:bg-accent"
+                style={{ height: barHeight }}
+              />
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-1.5 flex gap-1.5">
+        {days.map((d) => (
+          <span key={d.date} className="flex-1 text-center font-mono text-[10px] text-text-lo">
+            {dayLabel(d.date, "narrow")}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** "This week" card: one hero number, a vs-last-week delta, and the sparkline. */
+function WeekCard({ stats }: { stats: DashboardStats }) {
+  const weekTotal = stats.playtimeLast7Days.reduce((sum, d) => sum + d.totalSeconds, 0);
+  const delta = weekTotal - stats.prevWeekPlaytimeSeconds;
+  const gamesCount = stats.weekGames.length;
+
+  let deltaLine: React.ReactNode;
+  if (weekTotal === 0 && stats.prevWeekPlaytimeSeconds === 0) {
+    deltaLine = <span>No sessions yet — playtime will chart here.</span>;
+  } else {
+    deltaLine = (
+      <>
+        {delta === 0 ? (
+          <span>Same as last week</span>
+        ) : delta > 0 ? (
+          <span className="font-semibold text-success">▲ {formatDuration(delta)}</span>
+        ) : (
+          <span>▼ {formatDuration(-delta)}</span>
+        )}
+        {delta !== 0 && <span> vs last week</span>}
+        {gamesCount > 0 && (
+          <span>
+            {" "}
+            · {gamesCount} {gamesCount === 1 ? "game" : "games"}
+          </span>
+        )}
+      </>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl border border-border bg-surface px-6 py-5">
+      <h2 className="shelf-label">This week</h2>
+      <p className="mt-3 font-mono text-[34px] font-semibold tabular-nums tracking-tight text-text-hi">
+        {formatDuration(weekTotal)}
+      </p>
+      <p className="mt-1.5 text-[12.5px] text-text-lo">{deltaLine}</p>
+      <WeekSparkline days={stats.playtimeLast7Days} />
+    </div>
+  );
+}
+
+/** "Most played this week" card: the top game with cover, plus proportional bars for the top 3. */
+function MostPlayedCard({ weekGames }: { weekGames: GamePlaytime[] }) {
+  const top = weekGames[0];
+  return (
+    <div className="rounded-2xl border border-border bg-surface px-6 py-5">
+      <h2 className="shelf-label">Most played this week</h2>
+      {!top ? (
+        <p className="mt-4 text-[12.5px] leading-relaxed text-text-lo">
+          Nothing played in the last 7 days — your most-played game will show up here.
+        </p>
+      ) : (
+        <>
+          <div className="mt-3.5 flex items-center gap-3.5">
+            {top.coverUrl ? (
+              <img
+                src={top.coverUrl}
+                alt={top.name}
+                className="aspect-video w-24 shrink-0 rounded-lg object-cover"
+              />
+            ) : (
+              <div className="aspect-video w-24 shrink-0 rounded-lg bg-gradient-to-br from-surface-alt to-surface" />
+            )}
+            <div className="min-w-0">
+              <p className="truncate text-[14.5px] font-semibold text-text-hi">{top.name}</p>
+              <p className="mt-0.5 font-mono text-[11.5px] text-text-lo">
+                {formatDuration(top.totalSeconds)} this week
+              </p>
+            </div>
+          </div>
+          <div className="mt-4 flex flex-col gap-2.5">
+            {weekGames.slice(0, 3).map((g, i) => (
+              <div key={g.gameId} className="grid grid-cols-[110px_1fr_56px] items-center gap-3">
+                <span className="truncate text-[12.5px] text-text-lo">{g.name}</span>
+                <div className="h-[5px] overflow-hidden rounded-full bg-surface-alt">
+                  <div
+                    className={`h-full rounded-full ${i === 0 ? "bg-accent" : "bg-text-lo/40"}`}
+                    style={{ width: `${Math.max(4, (g.totalSeconds / top.totalSeconds) * 100)}%` }}
+                  />
+                </div>
+                <span className="text-right font-mono text-[11px] text-text-lo">
+                  {formatDuration(g.totalSeconds)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -253,11 +358,6 @@ export function Dashboard() {
   if (!stats) {
     return <p className="mx-auto max-w-5xl px-8 pt-24 text-sm text-text-lo">Loading dashboard…</p>;
   }
-
-  const chartData = stats.playtimeLast7Days.map((d) => ({
-    day: formatDayLabel(d.date),
-    hours: Math.round((d.totalSeconds / 3600) * 10) / 10,
-  }));
 
   // Heuristic first-run check: nothing tracked or completed and no active/backlog games —
   // a brand-new install with an empty library.
@@ -371,44 +471,12 @@ export function Dashboard() {
       )}
 
       <div className="mx-auto w-full max-w-5xl px-8 pb-14">
-        <StatStrip
-          stats={stats}
-          periodLabel={PERIODS.find((p) => p.value === period)?.label ?? ""}
-        />
-
-        <div className="mt-10">
-          <h2 className="shelf-label">Last 7 days</h2>
-          {chartData.every((d) => d.hours === 0) ? (
-            <div className="mt-4 flex h-44 items-center justify-center rounded-xl border border-dashed border-border-strong/50">
-              <p className="text-[13px] text-text-lo">
-                No sessions in the last 7 days — playtime will chart here.
-              </p>
-            </div>
-          ) : (
-          <div className="mt-4 h-44">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData}>
-                <XAxis dataKey="day" stroke="#928B82" fontSize={11} tickLine={false} axisLine={false} />
-                <YAxis stroke="#928B82" fontSize={11} allowDecimals={false} tickLine={false} axisLine={false} />
-                <Tooltip
-                  cursor={{ fill: "rgba(185, 106, 85, 0.08)" }}
-                  contentStyle={{
-                    background: "#1C1A19",
-                    border: "1px solid #3A3633",
-                    borderRadius: 10,
-                    fontSize: 12,
-                    color: "#EDE8E0",
-                  }}
-                  formatter={(value) => [`${value}h`, "Playtime"]}
-                />
-                <Bar dataKey="hours" fill="#B96A55" radius={[5, 5, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-          )}
+        <div className="grid gap-4 border-t border-border pt-8 sm:grid-cols-2">
+          <WeekCard stats={stats} />
+          <MostPlayedCard weekGames={stats.weekGames} />
         </div>
 
-        <div className="mt-10">
+        <div className="mt-11">
           <div className="flex items-center justify-between">
             <h2 className="shelf-label">Games played</h2>
             <div className="flex gap-1 rounded-lg bg-surface p-1">

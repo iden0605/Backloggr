@@ -240,6 +240,12 @@ pub struct DashboardStats {
     pub games_played_count: i64,
     pub games_played: Vec<GamePlaytime>,
     pub playtime_last_7_days: Vec<DailyPlaytime>,
+    /// Rolling previous-7-days total (days -13..-7, localtime) — the "vs last week" delta's
+    /// baseline. The current week's total is the sum of `playtime_last_7_days` client-side.
+    pub prev_week_playtime_seconds: i64,
+    /// Per-game playtime over the last 7 days, most-played first — feeds the fixed
+    /// "Most played this week" card independently of the shelf's period selector.
+    pub week_games: Vec<GamePlaytime>,
 }
 
 /// Maps a period selector to a SQL date-filter clause on `s.started_at`. Buckets are calendar
@@ -297,7 +303,7 @@ pub fn get_dashboard_stats(db: State<DbState>, period: String) -> Result<Dashboa
         )
         .map_err(|e| e.to_string())?;
 
-    let games_played = {
+    let per_game_playtime = |filter: &str| -> Result<Vec<GamePlaytime>, String> {
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT g.id, g.name, g.cover_url, SUM(s.duration_seconds) AS total
@@ -318,8 +324,23 @@ pub fn get_dashboard_stats(db: State<DbState>, period: String) -> Result<Dashboa
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
-        rows
+        Ok(rows)
     };
+
+    let games_played = per_game_playtime(filter)?;
+    // Fixed rolling week, independent of the shelf's period selector.
+    let week_games = per_game_playtime(period_filter("week")?)?;
+
+    let prev_week_playtime_seconds: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(s.duration_seconds), 0) FROM sessions s
+             WHERE s.duration_seconds IS NOT NULL
+               AND date(s.started_at, 'localtime') >= date('now', 'localtime', '-13 days')
+               AND date(s.started_at, 'localtime') < date('now', 'localtime', '-6 days')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
 
     let playtime_last_7_days = {
         // Same 'localtime' bucketing as period_filter — chart days must be the user's days.
@@ -361,6 +382,8 @@ pub fn get_dashboard_stats(db: State<DbState>, period: String) -> Result<Dashboa
         games_played_count,
         games_played,
         playtime_last_7_days,
+        prev_week_playtime_seconds,
+        week_games,
     })
 }
 
