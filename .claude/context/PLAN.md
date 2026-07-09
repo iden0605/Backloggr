@@ -1,12 +1,12 @@
 # Plan
 
-_Last updated: 2026-07-07 (task 25 round 1: fixes for the user's first real-Windows test report — launcher-exe auto-add blocklist, CREATE_NO_WINDOW on all spawns, window-scope crash-loop guard, clipper.log diagnostics, multi-game "+N more". User committing this round; Windows re-test pending)_
+_Last updated: 2026-07-10 (launch-infrastructure session: marketing website built + deployed to www.backloggr.com, repo open-sourced under GPL-3.0, in-repo release pipeline shaken out end-to-end, /version-update skill, Settings version card, v0.3.0 released publicly)_
 
 ## Current Phase
 
-**v2 refinement phase (in progress).** Task 25 (clipping/Windows live-test fixes) round 1 implemented 2026-07-07 from the user's first test of the installed release build on real Windows hardware — four reported issues addressed (see Completed). `cargo check`/`tsc`/`npm run build` clean; the user is committing this round themselves. Remaining v2 tasks: 25 (re-test), 26–28.
+**v2 refinement phase (in progress) + launch infrastructure DONE.** The 2026-07-10 session shipped everything around the app — marketing website, domain, open-source pivot, one-command release flow (see Completed). The app itself still has v2 tasks 25 (Windows re-test), 26–28 open.
 
-**NEXT SESSION STARTS HERE:** the user re-tests on Windows (delete the bogus "GRITO GRIOT" library entry first — the blocklist prevents new bad auto-adds but doesn't remove existing rows). If clip saving still fails, get the contents of `%APPDATA%\com.idenc.gamebacklog\clipper.log` — capture/save ffmpeg errors are now logged there specifically so the next report is diagnosable. If Windows hardware isn't available, task 26 (configurable clip hotkey) has no such dependency.
+**NEXT SESSION STARTS HERE:** either (a) the user re-tests clipping on Windows — install v0.3.0 from the website, delete the bogus "GRITO GRIOT" library entry first; if clip saving still fails, get `%APPDATA%\com.idenc.gamebacklog\clipper.log` — or (b) task 26 (configurable clip hotkey), no Windows dependency. One loose end from 2026-07-10: the APEX `backloggr.com` DNS record (www.backloggr.com works; the user needs to finish the apex custom domain in the Cloudflare Pages dashboard, or add the proxied CNAME `@ → backloggr-bcq.pages.dev` manually).
 
 ## Goals
 
@@ -166,20 +166,31 @@ _Last updated: 2026-07-07 (task 25 round 1: fixes for the user's first real-Wind
   - **Multiple games open at once — what should the dashboard show?** Decision: the most recently started open session wins the hero/indicator, with an honest count — `get_currently_playing` now also returns `also_playing` (COUNT of other open sessions); Dashboard hero appends "+N more running", TopNav appends "+N more". Related fix: TopNav's `session-ended` handler reloads instead of blanking, so one of several games quitting falls back to the next still-running game.
   - Verified: `cargo check`, `tsc --noEmit`, `npm run build` all clean (Windows-only code paths compile-checked by windows-check CI on push, as usual). One borrow-checker restructure in `ensure_capture` (slot field reads hoisted to locals before the `&mut slot.phase` match).
 
+- **2026-07-10 launch-infrastructure session** (spanned both repos; website details live in `backloggr-website/.claude/context/`):
+  - **Marketing website** built from scratch (React 18 + Vite + TS + Tailwind v3, Iron & Chalk palette, "Backdrop" editorial style) in the separate private `backloggr-website` repo: hero with explicit "Download for Windows" CTA + floating fanned poster stack, tracking/Shelby/clips/library sections, real Steam CDN cover art (`library_600x900.jpg`/`library_hero.jpg` by appid, gradient fallbacks — user's call: names/covers via CDN OK, industry-common), mono spec strip, mobile-verified. Deployed to Cloudflare Pages (`backloggr` project, direct `wrangler pages deploy` — no GitHub integration, repo stays private). Domain bought on Namecheap, zone on Cloudflare: **www.backloggr.com LIVE**, apex record pending.
+  - **Open-source pivot** (user decision after a failed intermediate plan): repo made PUBLIC under **GPL-3.0**. The first plan — private repo publishing cross-repo to a public `backloggr-releases` via fine-grained PAT — failed twice with "Resource not accessible by personal access token" (PAT grants sever when the target repo is deleted/recreated; a fresh token didn't resolve it either) and was abandoned. `release.yml` now publishes drafts in-repo with the default `GITHUB_TOKEN`; `backloggr-releases` deleted by the user.
+  - **Release pipeline hardened + shaken out**: "Set app version from tag" step stamps tag → tauri.conf.json at build time (tag = single source of truth; fixes the v0.2.0-tag/0.1.0-installer drift that breaks MSI upgrades); release name "backloggr vX.Y.Z"; **v0.3.0 built and published live** (assets internally 0.3.0 — stamping verified). v0.2.0 promoted from pre-release to full release so the website always has a download while a new version builds (`/releases/latest` skips drafts AND pre-releases — publish with pre-release unticked, always).
+  - **`/version-update` skill** created (`.claude/skills/version-update/`): reports current version, recommends semver bump from commits, confirms via question, syncs all version files + lockfiles, merges to main if needed, tags, pushes; the user's only remaining manual step is publishing CI's draft. Never hand-create releases (collides with CI's draft).
+  - **Settings "About" card**: app name + live version chip via `@tauri-apps/api/app` `getVersion()` (covered by `core:default`), so installs show exactly the tag-stamped version. Repo version files synced (were 0.1.0 while v0.2.0 shipped).
+  - **dev/main reconciled**: months-stale main merged up (incl. old PR merge commits that had diverged), both branches level; releases now cut from main only (user rule, also in the skill).
+
 ## Blockers
 
 _(none currently)_
 
 ## Open Questions
 
-- backloggr.com was still unregistered as of the 2026-07-07 whois check — the user should register it before it's gone (standard-price .com).
-- release.yml has never actually run — the first `v*` tag push is the shakeout (tauri-action release creation, gyan.dev download, sidecar staging path, msi/nsis/dmg artifacts). Cut a `v0.1.0` tag when ready; the release lands as a draft so a broken run publishes nothing.
+- Apex `backloggr.com` DNS record missing (www live and serving) — finish the apex custom domain in the Pages dashboard or add the proxied CNAME `@ → backloggr-bcq.pages.dev`, then verify.
+- The app has no update notification: an installed v0.2.0 never learns v0.3.0 exists. Candidate future task — Tauri updater plugin, or a lightweight "new version available" check against the same public releases API the website uses.
 - First real-Windows-hardware test happened 2026-07-07 (task 25 round 1 fixes landed from it). Still open from that round: WHY clip saves failed — "(no error output)" suggests an ffmpeg crash, suspected to be the capture crash-loop feeding broken segments, but confirmation needs the re-test's `%APPDATA%\com.idenc.gamebacklog\clipper.log`. Also still unverified live: WASAPI loopback audio in clips (packet pacing/silence padding), dshow mic, window-scoped capture actually working on a real game, and whether the user's machine ends up scope-blocked (fine — desktop + masking) or scoped. The user must delete the bogus "GRITO GRIOT" entry before re-testing.
 - Game-audio-in-clips on the macOS dev machine: optional re-test whenever the user does the one-time Multi-Output Device setup (Audio MIDI Setup → speakers + BlackHole → select as output). Mic-in-clips no longer depends on that (loopback-as-default-input guard landed 2026-07-04, and the toggle just needs switching on). Windows ships zero-setup via WASAPI loopback at task 16.
 - Post-ring-wrap saves (>3 min sessions) and window-cropped windowed-mode clips from round 2 haven't been explicitly confirmed by the user yet — piggyback on the next clip test.
 
 ## Decisions
 
+- Open source (2026-07-10): the app repo is **PUBLIC under GPL-3.0** — copyleft chosen deliberately over MIT/Apache to keep forks open while the user (copyright holder) retains dual-licensing/monetization options. Consequence: the RAWG key const is visible in source (accepted — free tier, always binary-extractable anyway).
+- Releases (2026-07-10): cut from **main only** (user rule, emphatic — never tag dev); tag = installer version (stamped in CI); publish flow is `/version-update` → CI drafts in-repo → user publishes with pre-release unticked. The website reads `iden0605/Backloggr`'s latest full release — no website deploys per release, and the previous version keeps serving while a new one builds.
+- Website deploys (2026-07-10): Cloudflare Pages **direct upload** (`npm run deploy` in `backloggr-website`) — deliberately no GitHub integration so that repo stays private.
 - Naming (2026-07-07): the app stays **backloggr** (user decision after a rename exploration; backloggr.com verified available via whois). The AI chatbot is named **Shelby** (shelf pun, user's pick) — all "Ask AI" copy renamed (Discover find box button "Ask Shelby", chat page title "Shelby", "Hey, I'm Shelby." empty-state intro, "Message Shelby..." composer placeholder, Dashboard first-run card). Worker prompts don't self-identify by name — frontend-only rename, no redeploy needed.
 - Marketing website will live in a **separate repo**, not this monorepo. This repo is app-only (+ future `proxy/` for the Cloudflare Worker). The site will pull the latest release info from the GitHub API rather than sharing code with this repo.
 - Development happens on macOS; the real target is Windows. Windows-only pieces (`gdigrab` capture, registry-based launch-on-startup, `.msi` build) can't be tested locally on Mac — they'll be validated via the GitHub Actions Windows runner and, eventually, manual testing on real Windows hardware.
