@@ -113,7 +113,7 @@ docs/             Developer docs — release-workflow.md (how a dev commit becom
 - **Add a DB table/column:** update `SCHEMA` const in `db.rs`, add query logic in a command, expose it.
 - **Add a new view/route:** create `src/components/<Area>/<Area>.tsx`, add a `<Route>` in `App.tsx`, add an entry to `navItems` in `Layout/TopNav.tsx`.
 - **Add a dropdown:** use `shared/Select.tsx`, never a native `<select>` (user rule — OS default popups clash with the design).
-- **Cut a release:** run `/version-update` — reports the current version, recommends the next semver bump from the commits since the last tag, syncs tauri.conf.json/Cargo.toml/package.json (+lockfiles), commits, tags `vX.Y.Z`, pushes (release.yml then drafts installers into the public `iden0605/backloggr-releases` repo). The user publishes the draft manually with pre-release unticked; release.yml stamps the installer version from the tag.
+- **Cut a release:** run `/version-update` — reports the current version, recommends the next semver bump from the commits since the last tag, syncs tauri.conf.json/Cargo.toml/package.json (+lockfiles), commits, tags `vX.Y.Z`, pushes (release.yml then drafts installers into this repo's releases (public, GPL-3.0)). The user publishes the draft manually with pre-release unticked; release.yml stamps the installer version from the tag.
 
 ## Conventions & Gotchas
 
