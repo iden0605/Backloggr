@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { SteamImportSection } from "./SteamImport";
 
 const MIN_CLIP_SECONDS = 5;
 const MAX_CLIP_SECONDS = 120;
@@ -144,6 +145,8 @@ export function Settings() {
           {micEnabled !== null && <Toggle on={micEnabled} onClick={toggleMic} />}
         </div>
       </div>
+
+      <SteamImportSection />
     </div>
   );
 }

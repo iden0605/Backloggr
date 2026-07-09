@@ -61,6 +61,44 @@ fn ffmpeg_path() -> &'static Path {
     })
 }
 
+/// Windows: `CREATE_NO_WINDOW`. Console tools (ffmpeg) spawned from a GUI app otherwise open a
+/// visible console window — live Windows testing had terminals flashing over the game on every
+/// capture spawn / device listing / probe, stealing focus and tabbing the player out. Must be set
+/// on EVERY Command in this module; there's a helper for each Command flavor.
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+fn hide_console(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
+fn hide_console_async(cmd: &mut tokio::process::Command) -> &mut tokio::process::Command {
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+/// Append-only diagnostics log at `<appdata>/clipper.log` — the only place capture/save failures
+/// are visible on an installed build (eprintln! goes nowhere without a console). Live Windows
+/// testing surfaced failures ("ffmpeg failed to assemble the clip (no error output)") that were
+/// undiagnosable without this. Best-effort; capped by truncating once it grows past ~256 KB.
+fn log_diagnostic(app: &AppHandle, message: &str) {
+    let Ok(dir) = app.path().app_data_dir() else { return };
+    let path = dir.join("clipper.log");
+    if path.metadata().map(|m| m.len() > 256 * 1024).unwrap_or(false) {
+        let _ = std::fs::remove_file(&path);
+    }
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "[{}] {message}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
+    }
+}
+
 /// Format of raw PCM riding into the capture ffmpeg over stdin — the Windows WASAPI loopback
 /// path (see loopback.rs). Present on every platform so `CaptureInputs` construction stays
 /// cfg-free; only the Windows branch ever populates it.
@@ -100,6 +138,14 @@ pub struct CaptureSlot {
     /// different stream layout can't be concatenated with the new spawn's) instead of counting
     /// an audio-input strike against it.
     restart_requested: bool,
+    /// Windows: set when a window-scoped (`gdigrab title=`) capture dies unexpectedly — some
+    /// windows (layered/hardware-composited) make gdigrab's title capture fail, and without this
+    /// flag the watchdog oscillates forever: desktop capture starts → title resolves → killed
+    /// for the scoped upgrade → scoped capture dies → desktop fallback → title resolves → ...
+    /// (a visible flicker loop in live testing). Once set, this session stays on desktop capture
+    /// with the focus sampler masking non-game content, which produces correct clips regardless.
+    /// Reset at every fresh session start.
+    window_scope_blocked: bool,
     phase: Option<Capture>,
 }
 
@@ -110,6 +156,7 @@ impl CaptureSlot {
             exe_name: None,
             respawn_strikes: 0,
             restart_requested: false,
+            window_scope_blocked: false,
             phase: None,
         }
     }
@@ -456,11 +503,11 @@ fn is_loopback_device_name(name: &str) -> bool {
 /// Windows-only: dshow audio device names, in listing order.
 #[cfg(target_os = "windows")]
 fn dshow_audio_devices() -> Vec<String> {
-    let Ok(output) = std::process::Command::new(ffmpeg_path())
-        .args(["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"])
+    let mut cmd = std::process::Command::new(ffmpeg_path());
+    cmd.args(["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"])
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .output()
+        .stdout(Stdio::null());
+    let Ok(output) = hide_console(&mut cmd).output()
     else {
         return Vec::new();
     };
@@ -614,6 +661,7 @@ fn capture_input_args(
     #[allow(unused_variables)] exe_name: Option<&str>,
     with_mic: bool,
     with_loopback: bool,
+    #[allow(unused_variables)] allow_window_scope: bool,
 ) -> Option<CaptureInputs> {
     // Live inputs each get a generous queue so one slow device can't stall the others.
     fn push_input(args: &mut Vec<String>, input: &[&str]) {
@@ -624,7 +672,11 @@ fn capture_input_args(
     if cfg!(target_os = "windows") {
         #[cfg(target_os = "windows")]
         {
-            let title = exe_name.and_then(find_window_title_for_exe);
+            let title = if allow_window_scope {
+                exe_name.and_then(find_window_title_for_exe)
+            } else {
+                None
+            };
             let (mut args, window_scoped) = match title {
                 Some(t) => {
                     let mut a = Vec::new();
@@ -848,8 +900,20 @@ fn spawn_ffmpeg(dir: &Path, inputs: &CaptureInputs) -> Option<Child> {
         .args(["-segment_wrap", &BUFFER_SEGMENTS.to_string()])
         .args(["-reset_timestamps", "1"])
         .arg(pattern)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(Stdio::null());
+    hide_console(&mut cmd);
+
+    // Capture stderr lands in `capture.log` (truncated per spawn) — when the capture dies, the
+    // watchdog reads this back into the persistent diagnostics log. It used to be discarded,
+    // which made every "capture keeps dying on this machine" report undiagnosable.
+    match std::fs::File::create(dir.join("capture.log")) {
+        Ok(log) => {
+            cmd.stderr(Stdio::from(log));
+        }
+        Err(_) => {
+            cmd.stderr(Stdio::null());
+        }
+    }
 
     // stdin carries the WASAPI loopback PCM when that input is in play (Windows); otherwise it
     // stays closed so ffmpeg can't block reading it.
@@ -935,14 +999,19 @@ pub fn ensure_capture(app: &AppHandle, exe_name: Option<&str>) {
     // `wipe` distinguishes "existing footage must be discarded" (fresh session start; desktop-
     // fallback footage after an upgrade) from "existing footage is legit game content" (crash
     // restart keeps it).
+    let mut died_unexpectedly = false;
+    // Read before the match — field reads on `slot` can't interleave with the `child` borrow.
+    let scope_blocked = slot.window_scope_blocked;
+    let restart_requested = slot.restart_requested;
     let (respawn, wipe) = match &mut slot.phase {
         None => {
             slot.respawn_strikes = 0;
+            slot.window_scope_blocked = false;
             (true, true)
         }
         Some(Capture { child, window_scoped }) => match child.try_wait() {
             Ok(None) => {
-                if !*window_scoped && window_now_resolvable(exe_name) {
+                if !*window_scoped && !scope_blocked && window_now_resolvable(exe_name) {
                     let _ = child.kill();
                     (true, true)
                 } else {
@@ -951,13 +1020,20 @@ pub fn ensure_capture(app: &AppHandle, exe_name: Option<&str>) {
                     (false, false)
                 }
             }
-            _ if slot.restart_requested => {
+            _ if restart_requested => {
                 // Deliberate kill (mic setting changed) — not an audio-input failure, and the
                 // old footage has a different stream layout than the new spawn will produce.
                 slot.restart_requested = false;
                 (true, true)
             }
             _ => {
+                died_unexpectedly = true;
+                // A window-scoped capture that dies is gdigrab failing on that window — don't
+                // re-scope this session, or the watchdog loops kill/respawn forever (see
+                // `window_scope_blocked`).
+                if *window_scoped {
+                    slot.window_scope_blocked = true;
+                }
                 slot.respawn_strikes = slot.respawn_strikes.saturating_add(1);
                 if slot.respawn_strikes == 2 {
                     eprintln!(
@@ -970,6 +1046,27 @@ pub fn ensure_capture(app: &AppHandle, exe_name: Option<&str>) {
     };
 
     let dir = buffer_dir(app);
+
+    // Preserve the dead spawn's ffmpeg stderr in the persistent diagnostics log BEFORE the next
+    // spawn truncates capture.log — the only trace of why capture keeps dying on a machine.
+    if died_unexpectedly {
+        let tail = std::fs::read_to_string(dir.join("capture.log"))
+            .map(|s| {
+                let lines: Vec<&str> = s.lines().collect();
+                lines[lines.len().saturating_sub(6)..].join(" | ")
+            })
+            .unwrap_or_default();
+        log_diagnostic(
+            app,
+            &format!(
+                "capture died (strike {}, window_scope_blocked {}): {}",
+                slot.respawn_strikes,
+                slot.window_scope_blocked,
+                if tail.is_empty() { "no ffmpeg stderr" } else { &tail }
+            ),
+        );
+    }
+
     if respawn {
         if let Err(e) = std::fs::create_dir_all(&dir) {
             eprintln!("clipper: failed to create buffer dir: {e}");
@@ -991,9 +1088,13 @@ pub fn ensure_capture(app: &AppHandle, exe_name: Option<&str>) {
         // After two capture deaths in a row, drop every audio input (mic AND loopback) — audio
         // devices are the usual suspect for instant spawn failures.
         let audio_healthy = slot.respawn_strikes < 2;
-        let Some(inputs) =
-            capture_input_args(exe.as_deref(), mic_enabled && audio_healthy, audio_healthy)
-        else {
+        let allow_window_scope = !slot.window_scope_blocked;
+        let Some(inputs) = capture_input_args(
+            exe.as_deref(),
+            mic_enabled && audio_healthy,
+            audio_healthy,
+            allow_window_scope,
+        ) else {
             eprintln!("clipper: no screen-capture input configured for this OS, buffer not started");
             slot.phase = None;
             return;
@@ -1031,6 +1132,7 @@ pub fn stop(app: &AppHandle) {
     };
     slot.generation += 1;
     slot.exe_name = None;
+    slot.window_scope_blocked = false;
     drop(slot);
 
     let _ = capture.child.kill();
@@ -1180,18 +1282,20 @@ fn load_clip(conn: &rusqlite::Connection, id: i64) -> Result<Clip, String> {
 }
 
 #[tauri::command]
-pub fn get_clips(db: tauri::State<DbState>) -> Result<Vec<Clip>, String> {
+pub fn get_clips(db: tauri::State<DbState>, game_id: Option<i64>) -> Result<Vec<Clip>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
+    // game_id filters to one game's clips (Library detail page); omitted = the full gallery.
     let mut stmt = conn
         .prepare(
             "SELECT c.id, c.game_id, g.name, c.file_path, c.thumbnail_path, c.duration_seconds,
                     c.created_at, c.title, c.notes
              FROM clips c LEFT JOIN games g ON g.id = c.game_id
+             WHERE ?1 IS NULL OR c.game_id = ?1
              ORDER BY c.created_at DESC",
         )
         .map_err(|e| e.to_string())?;
     let clips = stmt
-        .query_map([], |row| {
+        .query_map([game_id], |row| {
             Ok(Clip {
                 id: row.get(0)?,
                 game_id: row.get(1)?,
@@ -1342,15 +1446,13 @@ fn recent_segments(dir: &PathBuf, seconds: u32) -> Result<SelectedSegments, Stri
 /// `ffmpeg -i`'s metadata dump — the segment-count estimate can be off by up to a whole segment
 /// because the live segment is partial. Falls back to `None` (caller estimates) if parsing fails.
 async fn probe_duration_seconds(path: &Path) -> Option<i64> {
-    let output = tokio::process::Command::new(ffmpeg_path())
-        .arg("-i")
+    let mut cmd = tokio::process::Command::new(ffmpeg_path());
+    cmd.arg("-i")
         .arg(path)
         .args(["-hide_banner"])
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .output()
-        .await
-        .ok()?;
+        .stdout(Stdio::null());
+    let output = hide_console_async(&mut cmd).output().await.ok()?;
     // ffmpeg exits non-zero with "At least one output file must be specified" — expected; the
     // metadata we want is still printed to stderr before that.
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1420,15 +1522,13 @@ fn blackout_enable_expr(
 /// (same trick as `probe_duration_seconds`). Needed to map the game window's point-space bounds
 /// onto capture pixels for the save-time crop.
 async fn probe_dimensions(path: &Path) -> Option<(u32, u32)> {
-    let output = tokio::process::Command::new(ffmpeg_path())
-        .arg("-i")
+    let mut cmd = tokio::process::Command::new(ffmpeg_path());
+    cmd.arg("-i")
         .arg(path)
         .args(["-hide_banner"])
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .output()
-        .await
-        .ok()?;
+        .stdout(Stdio::null());
+    let output = hide_console_async(&mut cmd).output().await.ok()?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     let line = stderr.lines().find(|l| l.contains(" Video:"))?;
     // The dimensions token looks like "2560x1664" among comma-separated stream parameters. The
@@ -1574,8 +1674,7 @@ pub async fn save_clip(
             cmd.args(["-vf", &format!("{crop}fps=30")]);
         }
     }
-    let concat_output = cmd
-        .args(["-ss", &format!("{skip_secs:.2}")])
+    cmd.args(["-ss", &format!("{skip_secs:.2}")])
         .args(["-t", &seconds.to_string()])
         .args(["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"])
         // The audio track (mic) rides through untouched by the video mask — deliberately
@@ -1583,23 +1682,42 @@ pub async fn save_clip(
         .args(["-c:a", "aac", "-b:a", "160k"])
         .arg(&clip_path)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .output()
-        .await
-        .map_err(|e| e.to_string())?;
+        .stdout(Stdio::null());
+    let concat_output = hide_console_async(&mut cmd).output().await.map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&list_path);
 
     if !concat_output.status.success() {
-        // Surface ffmpeg's own first error line — "failed to assemble" alone made a whole class
-        // of bugs (0-byte segments in the list) undiagnosable from the app's logs.
+        // Surface ffmpeg's own first meaningful error line — "failed to assemble" alone made a
+        // whole class of bugs (0-byte segments in the list) undiagnosable from the app's logs.
+        // A crash (e.g. an access violation on Windows) can exit non-zero with EMPTY stderr, so
+        // fall back to the exit code rather than "no error output".
         let stderr = String::from_utf8_lossy(&concat_output.stderr);
-        let detail = stderr.lines().next().unwrap_or("no error output");
+        let detail = stderr
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("exit code {:?}", concat_output.status.code()));
         eprintln!("clipper: clip assembly failed: {stderr}");
+        log_diagnostic(
+            &app,
+            &format!(
+                "clip assembly failed ({} segments, {:.1}s selected, skip {:.2}s): {}",
+                segments.len(),
+                selected.total_secs,
+                skip_secs,
+                if stderr.trim().is_empty() {
+                    detail.clone()
+                } else {
+                    stderr.lines().collect::<Vec<_>>().join(" | ")
+                }
+            ),
+        );
         return Err(format!("ffmpeg failed to assemble the clip ({detail})"));
     }
 
     // Best-effort — a missing thumbnail shouldn't fail the whole save.
-    let _ = tokio::process::Command::new(ffmpeg_path())
+    let mut thumb_cmd = tokio::process::Command::new(ffmpeg_path());
+    thumb_cmd
         .args(["-y", "-hide_banner", "-loglevel", "error"])
         .args(["-ss", "1"])
         .arg("-i")
@@ -1608,9 +1726,8 @@ pub async fn save_clip(
         .arg(&thumb_path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await;
+        .stderr(Stdio::null());
+    let _ = hide_console_async(&mut thumb_cmd).status().await;
     let thumbnail_path = thumb_path.exists().then(|| thumb_path.to_string_lossy().to_string());
 
     // A zero-frame output is a failed save even when ffmpeg exits 0 — it happily writes an

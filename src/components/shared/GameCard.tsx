@@ -67,7 +67,7 @@ interface GameCardProps {
   footer?: ReactNode;
 }
 
-/** Compact card for grids (Search + Recommendations results); click anywhere to expand
+/** Compact card for grids (Discover search + AI results); click anywhere to expand
  *  into a detail panel that lazily fetches richer RAWG metadata via `get_game_details`. */
 export function GameCard({ game, note, footer }: GameCardProps) {
   const [expanded, setExpanded] = useState(false);
@@ -107,7 +107,18 @@ export function GameCard({ game, note, footer }: GameCardProps) {
     <>
       <div
         onClick={openDetail}
-        className="group flex h-full cursor-pointer flex-col overflow-hidden rounded-xl border border-border bg-surface transition-all duration-200 hover:-translate-y-0.5 hover:border-accent/40 hover:shadow-[0_16px_32px_-16px_rgba(0,0,0,0.6)]"
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          // The card is a div (it nests real buttons), so Enter/Space activation is manual.
+          // Only when the card itself is focused — key events from the nested buttons bubble here.
+          if (e.target !== e.currentTarget) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            void openDetail();
+          }
+        }}
+        className="group flex h-full cursor-pointer select-none flex-col overflow-hidden rounded-xl border border-border bg-surface transition-all duration-200 hover:-translate-y-0.5 hover:border-accent/40 hover:shadow-[0_16px_32px_-16px_rgba(0,0,0,0.6)]"
       >
         {game.coverUrl ? (
           <div className="relative h-32 w-full shrink-0 overflow-hidden">

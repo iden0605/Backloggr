@@ -3,14 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Link } from "react-router-dom";
 import { Clapperboard, Sparkles, Timer } from "lucide-react";
-import {
-  Bar,
-  BarChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 import { Game } from "../../store/useAppStore";
 
 type Period = "day" | "week" | "month" | "all";
@@ -37,10 +29,12 @@ interface DailyPlaytime {
 interface DashboardStats {
   totalPlaytimeSeconds: number;
   gamesCompleted: number;
-  gamesInBacklog: number;
-  gamesPlaying: number;
+  gamesInLibrary: number;
+  gamesPlayedCount: number;
   gamesPlayed: GamePlaytime[];
   playtimeLast7Days: DailyPlaytime[];
+  prevWeekPlaytimeSeconds: number;
+  weekGames: GamePlaytime[];
 }
 
 interface CurrentlyPlaying {
@@ -48,11 +42,14 @@ interface CurrentlyPlaying {
   name: string;
   coverUrl: string | null;
   startedAt: string;
+  /** Other games that also have an open session — the hero shows the most recent + this count. */
+  alsoPlaying: number;
 }
 
-interface GameTotalPlaytime {
-  gameId: number;
+interface LibraryGame extends Game {
   totalSeconds: number;
+  lastPlayedAt: string | null;
+  sessionCount: number;
 }
 
 // SQLite's CURRENT_TIMESTAMP is UTC but formatted without a timezone marker
@@ -77,9 +74,9 @@ function formatElapsed(seconds: number): string {
   return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
-function formatDayLabel(date: string): string {
+function dayLabel(date: string, style: "short" | "narrow"): string {
   const d = new Date(`${date}T00:00:00`);
-  return d.toLocaleDateString(undefined, { weekday: "short" });
+  return d.toLocaleDateString(undefined, { weekday: style });
 }
 
 function SessionTimer({ startedAt }: { startedAt: string }) {
@@ -158,28 +155,139 @@ function Hero({
   );
 }
 
-function StatStrip({ stats, periodLabel }: { stats: DashboardStats; periodLabel: string }) {
-  const cells = [
-    { value: formatDuration(stats.totalPlaytimeSeconds), label: `Played · ${periodLabel}` },
-    { value: String(stats.gamesPlaying), label: "Playing" },
-    { value: String(stats.gamesInBacklog), label: "In backlog" },
-    { value: String(stats.gamesCompleted), label: "Completed" },
-  ];
+/** Axis-free 7-day sparkline: quiet rust bars, day initials, exact value on hover only. */
+function WeekSparkline({ days }: { days: DailyPlaytime[] }) {
+  const max = Math.max(...days.map((d) => d.totalSeconds));
   return (
-    <div className="grid grid-cols-2 divide-border border-y border-border sm:grid-cols-4 sm:divide-x">
-      {cells.map((cell) => (
-        <div key={cell.label} className="px-5 py-5 first:pl-0">
-          <p className="text-[26px] font-bold tabular-nums tracking-tight text-text-hi">{cell.value}</p>
-          <p className="shelf-label mt-1">{cell.label}</p>
-        </div>
-      ))}
+    <div>
+      <div className="mt-5 flex h-14 items-end gap-1.5">
+        {days.map((d) => {
+          const barHeight =
+            d.totalSeconds === 0 ? 3 : Math.max(5, (d.totalSeconds / max) * 52);
+          return (
+            <div
+              key={d.date}
+              className="group relative flex h-full flex-1 flex-col items-center justify-end"
+            >
+              <span className="pointer-events-none absolute -top-6 whitespace-nowrap rounded-md border border-border-strong bg-surface-alt px-1.5 py-0.5 font-mono text-[10px] text-text-hi opacity-0 transition-opacity group-hover:opacity-100">
+                {dayLabel(d.date, "short")} ·{" "}
+                {d.totalSeconds > 0 ? formatDuration(d.totalSeconds) : "0m"}
+              </span>
+              <div
+                className="w-full rounded-t bg-accent/80 transition-colors group-hover:bg-accent"
+                style={{ height: barHeight }}
+              />
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-1.5 flex gap-1.5">
+        {days.map((d) => (
+          <span key={d.date} className="flex-1 text-center font-mono text-[10px] text-text-lo">
+            {dayLabel(d.date, "narrow")}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** "This week" card: one hero number, a vs-last-week delta, and the sparkline. */
+function WeekCard({ stats }: { stats: DashboardStats }) {
+  const weekTotal = stats.playtimeLast7Days.reduce((sum, d) => sum + d.totalSeconds, 0);
+  const delta = weekTotal - stats.prevWeekPlaytimeSeconds;
+  const gamesCount = stats.weekGames.length;
+
+  let deltaLine: React.ReactNode;
+  if (weekTotal === 0 && stats.prevWeekPlaytimeSeconds === 0) {
+    deltaLine = <span>No sessions yet — playtime will chart here.</span>;
+  } else {
+    deltaLine = (
+      <>
+        {delta === 0 ? (
+          <span>Same as last week</span>
+        ) : delta > 0 ? (
+          <span className="font-semibold text-success">▲ {formatDuration(delta)}</span>
+        ) : (
+          <span>▼ {formatDuration(-delta)}</span>
+        )}
+        {delta !== 0 && <span> vs last week</span>}
+        {gamesCount > 0 && (
+          <span>
+            {" "}
+            · {gamesCount} {gamesCount === 1 ? "game" : "games"}
+          </span>
+        )}
+      </>
+    );
+  }
+
+  return (
+    <div className="rounded-2xl border border-border bg-surface px-6 py-5">
+      <h2 className="shelf-label">This week</h2>
+      <p className="mt-3 font-mono text-[34px] font-semibold tabular-nums tracking-tight text-text-hi">
+        {formatDuration(weekTotal)}
+      </p>
+      <p className="mt-1.5 text-[12.5px] text-text-lo">{deltaLine}</p>
+      <WeekSparkline days={stats.playtimeLast7Days} />
+    </div>
+  );
+}
+
+/** "Most played this week" card: the top game with cover, plus proportional bars for the top 3. */
+function MostPlayedCard({ weekGames }: { weekGames: GamePlaytime[] }) {
+  const top = weekGames[0];
+  return (
+    <div className="rounded-2xl border border-border bg-surface px-6 py-5">
+      <h2 className="shelf-label">Most played this week</h2>
+      {!top ? (
+        <p className="mt-4 text-[12.5px] leading-relaxed text-text-lo">
+          Nothing played in the last 7 days — your most-played game will show up here.
+        </p>
+      ) : (
+        <>
+          <div className="mt-3.5 flex items-center gap-3.5">
+            {top.coverUrl ? (
+              <img
+                src={top.coverUrl}
+                alt={top.name}
+                className="aspect-video w-24 shrink-0 rounded-lg object-cover"
+              />
+            ) : (
+              <div className="aspect-video w-24 shrink-0 rounded-lg bg-gradient-to-br from-surface-alt to-surface" />
+            )}
+            <div className="min-w-0">
+              <p className="truncate text-[14.5px] font-semibold text-text-hi">{top.name}</p>
+              <p className="mt-0.5 font-mono text-[11.5px] text-text-lo">
+                {formatDuration(top.totalSeconds)} this week
+              </p>
+            </div>
+          </div>
+          <div className="mt-4 flex flex-col gap-2.5">
+            {weekGames.slice(0, 3).map((g, i) => (
+              <div key={g.gameId} className="grid grid-cols-[110px_1fr_56px] items-center gap-3">
+                <span className="truncate text-[12.5px] text-text-lo">{g.name}</span>
+                <div className="h-[5px] overflow-hidden rounded-full bg-surface-alt">
+                  <div
+                    className={`h-full rounded-full ${i === 0 ? "bg-accent" : "bg-text-lo/40"}`}
+                    style={{ width: `${Math.max(4, (g.totalSeconds / top.totalSeconds) * 100)}%` }}
+                  />
+                </div>
+                <span className="text-right font-mono text-[11px] text-text-lo">
+                  {formatDuration(g.totalSeconds)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
 function GameShelfCard({ game }: { game: GamePlaytime }) {
   return (
-    <div className="group w-44 shrink-0 cursor-default">
+    <Link to={`/library/${game.gameId}`} className="group w-44 shrink-0 rounded-lg">
       {game.coverUrl ? (
         <img
           src={game.coverUrl}
@@ -191,15 +299,14 @@ function GameShelfCard({ game }: { game: GamePlaytime }) {
       )}
       <p className="mt-2.5 truncate text-[13px] font-medium text-text-hi">{game.name}</p>
       <p className="mt-0.5 font-mono text-[11px] text-text-lo">{formatDuration(game.totalSeconds)}</p>
-    </div>
+    </Link>
   );
 }
 
 export function Dashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [currentlyPlaying, setCurrentlyPlaying] = useState<CurrentlyPlaying | null>(null);
-  const [backlogGames, setBacklogGames] = useState<Game[]>([]);
-  const [lifetimeByGame, setLifetimeByGame] = useState<Map<number, number>>(new Map());
+  const [libraryGames, setLibraryGames] = useState<LibraryGame[]>([]);
   const [period, setPeriod] = useState<Period>("week");
   const [error, setError] = useState<string | null>(null);
 
@@ -213,14 +320,11 @@ export function Dashboard() {
     invoke<CurrentlyPlaying | null>("get_currently_playing")
       .then(setCurrentlyPlaying)
       .catch((e) => setError(String(e)));
-    // Backlog list feeds the idle hero's "up next" pick; lifetime totals feed the hero's
-    // per-game line. Both are cheap local reads.
-    invoke<Game[]>("get_backlog")
-      .then(setBacklogGames)
-      .catch(() => setBacklogGames([]));
-    invoke<GameTotalPlaytime[]>("get_playtime_totals")
-      .then((totals) => setLifetimeByGame(new Map(totals.map((t) => [t.gameId, t.totalSeconds]))))
-      .catch(() => setLifetimeByGame(new Map()));
+    // Library aggregates feed the idle hero's "jump back in" pick and the live hero's
+    // lifetime line — one cheap local read.
+    invoke<LibraryGame[]>("get_library")
+      .then(setLibraryGames)
+      .catch(() => setLibraryGames([]));
   }, []);
 
   useEffect(() => {
@@ -257,18 +361,12 @@ export function Dashboard() {
     return <p className="mx-auto max-w-5xl px-8 pt-24 text-sm text-text-lo">Loading dashboard…</p>;
   }
 
-  const chartData = stats.playtimeLast7Days.map((d) => ({
-    day: formatDayLabel(d.date),
-    hours: Math.round((d.totalSeconds / 3600) * 10) / 10,
-  }));
-
   // Heuristic first-run check: nothing tracked or completed and no active/backlog games —
   // a brand-new install with an empty library.
   const isFirstRun =
     !currentlyPlaying &&
     stats.totalPlaytimeSeconds === 0 &&
-    stats.gamesPlaying === 0 &&
-    stats.gamesInBacklog === 0 &&
+    stats.gamesInLibrary === 0 &&
     stats.gamesCompleted === 0 &&
     stats.gamesPlayed.length === 0;
 
@@ -287,7 +385,7 @@ export function Dashboard() {
       {
         icon: Sparkles,
         title: "Know what to play next",
-        copy: "Discover learns from what you actually play, or describe a mood in chat and get a shortlist.",
+        copy: "Discover learns from what you actually play, or ask Shelby for a mood-matched shortlist.",
       },
     ];
     return (
@@ -296,17 +394,17 @@ export function Dashboard() {
           <p className="font-mono text-[11px] font-medium uppercase tracking-[0.18em] text-accent">
             Welcome
           </p>
-          <h1 className="page-title mt-3 text-5xl">Your backlog starts here</h1>
+          <h1 className="page-title mt-3 text-5xl">Your library starts here</h1>
           <p className="mt-4 max-w-lg text-[13.5px] leading-relaxed text-text-lo">
             Add a game and start playing — playtime, stats, and trends will build up on this
             page. Search for a title, or just launch something you own and it'll be picked up
             automatically.
           </p>
           <Link
-            to="/search"
-            className="mt-6 inline-block rounded-lg bg-text-hi px-4 py-2 text-[12.5px] font-semibold text-bg transition-opacity hover:opacity-85"
+            to="/discover"
+            className="mt-6 inline-block rounded-lg bg-text-hi px-4 py-2 text-[12.5px] font-semibold text-bg transition-all duration-150 hover:opacity-85 active:scale-[0.98]"
           >
-            Search for a game
+            Find a game
           </Link>
         </div>
 
@@ -323,17 +421,27 @@ export function Dashboard() {
     );
   }
 
-  // Idle hero: feature the next thing to play — first backlog game with art, else wishlist,
-  // else the most-played game as a "jump back in".
-  const upNext =
-    backlogGames.find((g) => g.status === "backlog" && g.coverUrl) ??
-    backlogGames.find((g) => g.status === "wishlist" && g.coverUrl) ??
+  // Idle hero: recent activity, not a queue — the game most recently actually played.
+  // ("Up next from your backlog" died with the queue model; the library doesn't tell you
+  // what to play, it reflects what you play.)
+  const jumpBackIn =
+    libraryGames
+      .filter((g) => g.totalSeconds > 0 && g.lastPlayedAt)
+      .sort((a, b) => parseUtc(b.lastPlayedAt!).getTime() - parseUtc(a.lastPlayedAt!).getTime())[0] ??
     null;
-  const jumpBackIn = stats.gamesPlayed[0] ?? null;
 
   const lifetimeLine = (gameId: number) => {
-    const total = lifetimeByGame.get(gameId);
+    const total = libraryGames.find((g) => g.id === gameId)?.totalSeconds;
     return total && total > 0 ? `${formatDuration(total)} lifetime` : null;
+  };
+
+  const relativeDays = (timestamp: string) => {
+    const days = Math.floor((Date.now() - parseUtc(timestamp).getTime()) / 86_400_000);
+    if (days <= 0) return "today";
+    if (days === 1) return "yesterday";
+    if (days < 14) return `${days} days ago`;
+    if (days < 60) return `${Math.floor(days / 7)} weeks ago`;
+    return `${Math.floor(days / 30)} months ago`;
   };
 
   return (
@@ -351,18 +459,18 @@ export function Dashboard() {
             {lifetimeLine(currentlyPlaying.gameId) && (
               <span>· {lifetimeLine(currentlyPlaying.gameId)}</span>
             )}
-          </p>
-        </Hero>
-      ) : upNext ? (
-        <Hero label="Up next · from your backlog" title={upNext.name} coverUrl={upNext.coverUrl}>
-          <p className="mt-3 text-[13px] text-text-lo">
-            Launch it and tracking starts automatically.
+            {currentlyPlaying.alsoPlaying > 0 && (
+              <span>
+                · +{currentlyPlaying.alsoPlaying} more running
+              </span>
+            )}
           </p>
         </Hero>
       ) : jumpBackIn ? (
         <Hero label="Jump back in" title={jumpBackIn.name} coverUrl={jumpBackIn.coverUrl}>
           <p className="mt-3 text-[13px] text-text-lo">
-            {formatDuration(jumpBackIn.totalSeconds)} played — pick it back up anytime.
+            Last played {relativeDays(jumpBackIn.lastPlayedAt!)} ·{" "}
+            {formatDuration(jumpBackIn.totalSeconds)} total
           </p>
         </Hero>
       ) : (
@@ -370,44 +478,12 @@ export function Dashboard() {
       )}
 
       <div className="mx-auto w-full max-w-5xl px-8 pb-14">
-        <StatStrip
-          stats={stats}
-          periodLabel={PERIODS.find((p) => p.value === period)?.label ?? ""}
-        />
-
-        <div className="mt-10">
-          <h2 className="shelf-label">Last 7 days</h2>
-          {chartData.every((d) => d.hours === 0) ? (
-            <div className="mt-4 flex h-44 items-center justify-center rounded-xl border border-dashed border-border-strong/50">
-              <p className="text-[13px] text-text-lo">
-                No sessions in the last 7 days — playtime will chart here.
-              </p>
-            </div>
-          ) : (
-          <div className="mt-4 h-44">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData}>
-                <XAxis dataKey="day" stroke="#928B82" fontSize={11} tickLine={false} axisLine={false} />
-                <YAxis stroke="#928B82" fontSize={11} allowDecimals={false} tickLine={false} axisLine={false} />
-                <Tooltip
-                  cursor={{ fill: "rgba(185, 106, 85, 0.08)" }}
-                  contentStyle={{
-                    background: "#1C1A19",
-                    border: "1px solid #3A3633",
-                    borderRadius: 10,
-                    fontSize: 12,
-                    color: "#EDE8E0",
-                  }}
-                  formatter={(value) => [`${value}h`, "Playtime"]}
-                />
-                <Bar dataKey="hours" fill="#B96A55" radius={[5, 5, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-          )}
+        <div className="grid gap-4 border-t border-border pt-8 sm:grid-cols-2">
+          <WeekCard stats={stats} />
+          <MostPlayedCard weekGames={stats.weekGames} />
         </div>
 
-        <div className="mt-10">
+        <div className="mt-11">
           <div className="flex items-center justify-between">
             <h2 className="shelf-label">Games played</h2>
             <div className="flex gap-1 rounded-lg bg-surface p-1">

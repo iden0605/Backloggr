@@ -6,6 +6,7 @@ mod db;
 mod loopback;
 mod overlay;
 mod rawg;
+mod steam;
 mod tracker;
 mod tray;
 
@@ -104,7 +105,8 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            commands::get_backlog,
+            commands::get_library,
+            commands::get_game_stats,
             commands::search_rawg,
             commands::add_game,
             commands::update_game_status,
@@ -112,10 +114,14 @@ pub fn run() {
             commands::set_game_exe_name,
             commands::get_dashboard_stats,
             commands::get_currently_playing,
-            commands::get_playtime_totals,
             commands::get_game_details,
             commands::chat_recommend,
             commands::get_dashboard_recommendations,
+            commands::get_more_dashboard_recommendations,
+            commands::list_chats,
+            commands::get_chat,
+            commands::save_chat,
+            commands::delete_chat,
             clipper::get_clips,
             clipper::delete_clip,
             clipper::save_clip,
@@ -124,7 +130,10 @@ pub fn run() {
             clipper::get_mic_enabled,
             clipper::set_mic_enabled,
             commands::get_autostart_enabled,
-            commands::set_autostart_enabled
+            commands::set_autostart_enabled,
+            commands::fetch_steam_library,
+            commands::import_steam_games,
+            commands::get_steam_profile
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

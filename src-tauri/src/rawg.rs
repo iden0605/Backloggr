@@ -27,6 +27,7 @@ struct RawgResult {
     slug: String,
     name: String,
     background_image: Option<String>,
+    released: Option<String>,
     genres: Vec<RawgGenre>,
     platforms: Option<Vec<RawgPlatformEntry>>,
 }
@@ -79,6 +80,16 @@ pub struct RawgGameResult {
     pub genre: Option<String>,
     pub platform: Option<String>,
     pub rawg_url: String,
+    /// RAWG's release date (`YYYY-MM-DD`) — the authoritative source for release-window
+    /// filtering of AI recommendations (the model's own date knowledge is unreliable).
+    /// `default` keeps pre-existing dashboard cache rows deserializing.
+    #[serde(default)]
+    pub released: Option<String>,
+}
+
+/// Release year parsed from RAWG's `YYYY-MM-DD` date, `None` when RAWG has no date.
+pub fn release_year(game: &RawgGameResult) -> Option<i32> {
+    game.released.as_deref()?.get(..4)?.parse().ok()
 }
 
 #[derive(Serialize)]
@@ -141,10 +152,26 @@ pub async fn search_games(query: &str) -> Result<Vec<RawgGameResult>, String> {
             genre: join_names(r.genres.into_iter().map(|g| g.name).collect()),
             platform: join_platforms(r.platforms),
             rawg_url: format!("https://rawg.io/games/{}", r.slug),
+            released: r.released,
         })
         .collect();
 
     Ok(games)
+}
+
+/// Best single result for a title we believe is a real game name (a storefront folder name or a
+/// Steam library entry), preferring an exact case-insensitive name match over RAWG's relevance
+/// ordering rather than trusting it blindly — used by the tracker's auto-add and the Steam
+/// library import.
+pub async fn best_match(title: &str) -> Option<RawgGameResult> {
+    let results = search_games(title).await.ok()?;
+    let exact = results
+        .iter()
+        .position(|r| r.name.eq_ignore_ascii_case(title));
+    match exact {
+        Some(i) => results.into_iter().nth(i),
+        None => results.into_iter().next(),
+    }
 }
 
 /// Best single match for a specific title, used to resolve a game name the AI named (as opposed
@@ -173,6 +200,7 @@ async fn search_best_match(title: &str) -> Option<RawgGameResult> {
         genre: join_names(r.genres.into_iter().map(|g| g.name).collect()),
         platform: join_platforms(r.platforms),
         rawg_url: format!("https://rawg.io/games/{}", r.slug),
+        released: r.released,
     })
 }
 
@@ -223,6 +251,97 @@ pub async fn resolve_titles_with_reasons(
     }
 
     games
+}
+
+impl From<RawgResult> for RawgGameResult {
+    fn from(r: RawgResult) -> Self {
+        RawgGameResult {
+            rawg_id: r.id,
+            name: r.name,
+            cover_url: r.background_image,
+            genre: join_names(r.genres.into_iter().map(|g| g.name).collect()),
+            platform: join_platforms(r.platforms),
+            rawg_url: format!("https://rawg.io/games/{}", r.slug),
+            released: r.released,
+        }
+    }
+}
+
+/// RAWG taxonomy genre name → API slug for the discovery query's `genres` filter (the API
+/// takes slugs, not display names). Covers the taxonomy the worker prompts use; unknown
+/// names are skipped rather than failing the query.
+fn genre_slug(name: &str) -> Option<&'static str> {
+    Some(match name.to_lowercase().as_str() {
+        "action" => "action",
+        "adventure" => "adventure",
+        "rpg" => "role-playing-games-rpg",
+        "strategy" => "strategy",
+        "shooter" => "shooter",
+        "simulation" => "simulation",
+        "puzzle" => "puzzle",
+        "platformer" => "platformer",
+        "racing" => "racing",
+        "sports" => "sports",
+        "fighting" => "fighting",
+        "casual" => "casual",
+        "indie" => "indie",
+        "arcade" => "arcade",
+        "massively multiplayer" => "massively-multiplayer",
+        "family" => "family",
+        "board games" => "board-games",
+        "card" => "card",
+        "educational" => "educational",
+        _ => return None,
+    })
+}
+
+/// Date-range discovery: popular releases (RAWG's `-added` ordering — how many users shelved
+/// the game, the site's de-facto popularity signal) within a release window, optionally
+/// narrowed to genres. Supplements AI-named candidates with genuinely NEW releases: the Groq
+/// model's knowledge thins out for 2024+, so it structurally can't name the newest games no
+/// matter how hard the prompt leans recent. Best-effort — any failure returns an empty list.
+pub async fn discover_recent(
+    min_year: i32,
+    max_year: Option<i32>,
+    genres: &[String],
+) -> Vec<RawgGameResult> {
+    use chrono::Datelike;
+    // End at today, not Dec 31 — a date range reaching into the future returns announced
+    // but unreleased games, which read as broken recommendations.
+    let today = chrono::Utc::now().date_naive();
+    let end = match max_year {
+        Some(y) if y < today.year() => format!("{y}-12-31"),
+        _ => today.format("%Y-%m-%d").to_string(),
+    };
+    let dates = format!("{min_year}-01-01,{end}");
+
+    let mut query: Vec<(&str, String)> = vec![
+        ("key", RAWG_API_KEY.to_string()),
+        ("dates", dates),
+        ("ordering", "-added".to_string()),
+        ("page_size", "20".to_string()),
+    ];
+    let slugs: Vec<&str> = genres.iter().filter_map(|g| genre_slug(g)).collect();
+    if !slugs.is_empty() {
+        // Comma = OR, matching the worker filters' any-genre semantics.
+        query.push(("genres", slugs.join(",")));
+    }
+
+    let Ok(response) = http_client()
+        .get(format!("{RAWG_BASE_URL}/games"))
+        .query(&query)
+        .send()
+        .await
+    else {
+        return Vec::new();
+    };
+    if !response.status().is_success() {
+        return Vec::new();
+    }
+    let Ok(parsed) = response.json::<RawgSearchResponse>().await else {
+        return Vec::new();
+    };
+    parsed.results.into_iter().map(RawgGameResult::from).collect()
 }
 
 pub async fn get_game_details(rawg_id: i64) -> Result<RawgGameDetail, String> {

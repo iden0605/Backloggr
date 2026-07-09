@@ -5,7 +5,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { Film, Play, Trash2 } from "lucide-react";
 import { EmptyState } from "../shared/EmptyState";
 
-interface Clip {
+export interface Clip {
   id: number;
   gameId: number | null;
   gameName: string | null;
@@ -155,7 +155,7 @@ function ClipCard({
   );
 }
 
-function ClipPlayer({ clip, onClose }: { clip: Clip; onClose: () => void }) {
+export function ClipPlayer({ clip, onClose }: { clip: Clip; onClose: () => void }) {
   return (
     <div
       className="fixed inset-0 z-50 flex animate-fade-in items-center justify-center bg-bg/80 p-6 backdrop-blur-sm"

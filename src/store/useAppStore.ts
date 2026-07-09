@@ -34,22 +34,31 @@ export interface Game {
 }
 
 interface AppState {
-  games: Game[];
   currentlyPlayingId: number | null;
-  setGames: (games: Game[]) => void;
   setCurrentlyPlayingId: (id: number | null) => void;
-  // Recommendations "Chat" tab state, lifted out of the component so it survives route
+  // Discover "Ask AI" chat state, lifted out of the component so it survives route
   // navigation and tab switches instead of resetting every time ChatTab unmounts.
   chatTurns: ChatTurn[];
   chatQuestionsAsked: number;
   setChatTurns: (turns: ChatTurn[] | ((prev: ChatTurn[]) => ChatTurn[])) => void;
   setChatQuestionsAsked: (count: number | ((prev: number) => number)) => void;
+  // Row id of the active conversation in chat_conversations — null until its first
+  // save (a brand-new chat), set/cleared by DiscoverChat as chats are loaded/reset.
+  chatId: number | null;
+  setChatId: (id: number | null) => void;
+  // True once DiscoverChat has attempted to restore the most recent conversation from
+  // the DB this app-run — keeps "New chat" from being clobbered by a re-restore.
+  chatHydrated: boolean;
+  setChatHydrated: (hydrated: boolean) => void;
+  // The For You set as currently shown (base fetch + any "Load more" batches). Lives here
+  // so hopping Discover ↔ Shelby keeps the exact same grid; Shell clears it when the user
+  // leaves the Discover section entirely, which is what triggers a rediscover.
+  forYouRecs: { reasoning: string; games: RecommendedGame[] } | null;
+  setForYouRecs: (recs: { reasoning: string; games: RecommendedGame[] } | null) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
-  games: [],
   currentlyPlayingId: null,
-  setGames: (games) => set({ games }),
   setCurrentlyPlayingId: (id) => set({ currentlyPlayingId: id }),
   chatTurns: [],
   chatQuestionsAsked: 0,
@@ -59,4 +68,10 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({
       chatQuestionsAsked: typeof count === "function" ? count(state.chatQuestionsAsked) : count,
     })),
+  chatId: null,
+  setChatId: (id) => set({ chatId: id }),
+  chatHydrated: false,
+  setChatHydrated: (hydrated) => set({ chatHydrated: hydrated }),
+  forYouRecs: null,
+  setForYouRecs: (recs) => set({ forYouRecs: recs }),
 }));

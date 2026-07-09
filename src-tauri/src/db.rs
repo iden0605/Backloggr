@@ -52,6 +52,18 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT
 );
 
+-- Discover \"Ask AI\" conversations. Turns are an opaque JSON blob of the frontend's
+-- ChatTurn shape (append-only, single-user — no need for per-turn rows); Rust never
+-- parses it, just stores and returns it.
+CREATE TABLE IF NOT EXISTS chat_conversations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  turns_json TEXT NOT NULL,
+  questions_asked INTEGER NOT NULL DEFAULT 0,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Single-row cache (id is always 1) for the Dashboard's \"based on your activity\" AI
 -- recommendations — regenerated only when backlog size, top-played genre, or that genre's
 -- playtime shift meaningfully (see commands::get_dashboard_recommendations), not on every
@@ -109,6 +121,19 @@ pub fn init(app_data_dir: &PathBuf) -> Connection {
         "ended_estimated",
         "ended_estimated BOOLEAN DEFAULT 0",
     );
+
+    // steam_appid: set on games imported (or linked) via the Steam library import, so a
+    // re-import can skip everything already brought in even when the RAWG match differs
+    // between runs.
+    add_column_if_missing(&conn, "games", "steam_appid", "steam_appid INTEGER");
+
+    // Library model (v2): activity ("playing now" / played / never played) is derived from
+    // sessions, not stored. The status column keeps its original CHECK values but they now
+    // mean: 'backlog' = plain in-library, 'completed' / 'dropped' ("Not for me") = the two
+    // manual marks, 'wishlist' = the separate wishlist tab. 'playing' is legacy — the tracker
+    // no longer writes it; normalize any rows left over from the queue era.
+    conn.execute("UPDATE games SET status = 'backlog' WHERE status = 'playing'", [])
+        .expect("failed to normalize legacy 'playing' statuses");
 
     conn
 }
