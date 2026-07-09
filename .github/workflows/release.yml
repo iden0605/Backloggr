@@ -52,6 +52,14 @@ jobs:
 
       - run: npm ci
 
+      # The tag is the single source of truth for the release version: v0.2.1 → installers
+      # internally versioned 0.2.1. Stamped into tauri.conf.json here so nobody has to
+      # remember to bump it by hand (MSI upgrade logic keys off this internal version, so a
+      # forgotten bump breaks install-over-install upgrades). The repo copy stays untouched;
+      # dev builds keep whatever version is checked in.
+      - name: Set app version from tag
+        run: node -e "const fs=require('fs');const f='src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(f));c.version=process.env.GITHUB_REF_NAME.replace(/^v/,'');fs.writeFileSync(f,JSON.stringify(c,null,2));console.log('version',c.version)"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASES_TOKEN }}
