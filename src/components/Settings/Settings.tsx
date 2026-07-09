@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { SteamImportSection } from "./SteamImport";
 
 const MIN_CLIP_SECONDS = 5;
@@ -33,8 +34,10 @@ export function Settings() {
   const [autostart, setAutostart] = useState<boolean | null>(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [version, setVersion] = useState<string | null>(null);
 
   useEffect(() => {
+    getVersion().then(setVersion).catch(() => {});
     invoke<number>("get_clip_seconds")
       .then(setClipSeconds)
       .catch((err) => setError(String(err)));
@@ -147,6 +150,18 @@ export function Settings() {
       </div>
 
       <SteamImportSection />
+
+      <div className="mt-5 max-w-xl rounded-xl border border-border bg-surface p-5">
+        <h2 className="shelf-label">About</h2>
+        <div className="mt-3 flex items-center justify-between gap-4">
+          <p className="text-[13.5px] font-medium text-text-hi">backloggr</p>
+          {version && (
+            <span className="rounded-md border border-border bg-surface-alt px-2 py-1 font-mono text-xs text-text-lo select-none">
+              v{version}
+            </span>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
