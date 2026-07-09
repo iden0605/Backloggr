@@ -22,7 +22,7 @@ Prepares a backloggr release end-to-end short of publishing: reports the current
    - Latest tag in this repo: `git tag --sort=-v:refname | head -3`
    - Repo file versions: read `version` from `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, `package.json` — flag any disagreement between them (expected historical drift; this run fixes it).
 
-2. **Check the working tree.** Run `git status --short`. If there are uncommitted changes, tell the user and ask whether to (a) commit them separately first themselves, (b) have them included in this release's history before tagging, or (c) abort. Never tag with unresolved uncommitted changes silently.
+2. **Check the working tree and branch.** Run `git status --short` and `git branch --show-current`. If there are uncommitted changes, tell the user and ask whether to (a) commit them separately first themselves, (b) have them included in this release's history before tagging, or (c) abort. Never tag with unresolved uncommitted changes silently. **Releases are cut from `main` ONLY** (user rule): if not on `main`, offer to merge the current branch into `main` (`git checkout main && git pull && git merge <branch> && git push`) and continue there, or abort — never tag `dev` or a feature branch.
 
 3. **Analyze what changed** since the latest tag: `git log <latest-tag>..HEAD --oneline` (if no tag exists, summarize recent history instead). Classify the commits:
    - Only fixes/chores/docs → **patch** bump
