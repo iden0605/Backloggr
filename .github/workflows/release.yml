@@ -4,11 +4,9 @@
 # its PATH-lookup ffmpeg. The release is created as a DRAFT: review the assets on GitHub, then
 # publish it by hand.
 #
-# Releases publish to the PUBLIC iden0605/backloggr-releases repo (this source repo is private,
-# so its own releases would be invisible to the website's download button and to visitors).
-# That cross-repo upload needs RELEASES_TOKEN: a fine-grained PAT with Contents read/write on
-# backloggr-releases, stored as a repo secret here — the default GITHUB_TOKEN can't write to
-# other repos.
+# This repo is public (GPL-3.0, 2026-07-10) and releases publish directly here with the
+# default GITHUB_TOKEN — the earlier cross-repo backloggr-releases setup is gone, along with
+# its PAT headaches. The website's download button reads this repo's latest full release.
 name: release
 
 on:
@@ -62,16 +60,11 @@ jobs:
 
       - uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Compile-time-baked into steam.rs (option_env!) — a build made without this secret
           # ships with the Steam library import disabled.
           STEAM_API_KEY: ${{ secrets.STEAM_API_KEY }}
         with:
-          owner: iden0605
-          repo: backloggr-releases
-          # Tags in the target repo are cut from its main branch (required when the release
-          # repo isn't the one running the workflow).
-          releaseCommitish: main
           tagName: ${{ github.ref_name }}
           releaseName: "backloggr ${{ github.ref_name }}"
           releaseDraft: true

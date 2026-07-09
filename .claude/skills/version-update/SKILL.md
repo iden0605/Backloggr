@@ -7,18 +7,18 @@ disable-model-invocation: true
 
 ## What This Skill Does
 
-Prepares a backloggr release end-to-end short of publishing: reports the current version, recommends the next semver number from the real changes since the last release, syncs every version file in the repo, then commits, tags, and pushes — which triggers `release.yml` to build installers into a DRAFT release on the public `iden0605/backloggr-releases` repo. **Publishing that draft on GitHub stays manual** (and the pre-release checkbox must stay unticked, or the website's download button won't see it).
+Prepares a backloggr release end-to-end short of publishing: reports the current version, recommends the next semver number from the real changes since the last release, syncs every version file in the repo, then commits, tags, and pushes — which triggers `release.yml` to build installers into a DRAFT release on this repo (public, GPL-3.0). **Publishing that draft on GitHub stays manual** (and the pre-release checkbox must stay unticked, or the website's download button won't see it).
 
 ## Context
 
 - `release.yml` stamps the app version **from the git tag** at build time (`v0.3.0` → installers versioned `0.3.0`). The repo's own version files only affect dev builds — but this skill keeps them in sync anyway so nothing drifts.
 - Version files: `src-tauri/tauri.conf.json` (`version`), `src-tauri/Cargo.toml` (`[package] version`), `package.json` (`version`), plus their lockfiles.
-- The website's download button serves the latest **full (non-pre-release)** release from `iden0605/backloggr-releases` automatically — no website work is ever needed here.
+- The website's download button serves the latest **full (non-pre-release)** release from `iden0605/Backloggr` automatically — no website work is ever needed here.
 
 ## Steps
 
 1. **Report the current version.** Gather and show the user, clearly labeled:
-   - Latest public release: `gh release list -R iden0605/backloggr-releases --limit 3` (note draft/pre-release markers)
+   - Latest public release: `gh release list -R iden0605/Backloggr --limit 3` (note draft/pre-release markers)
    - Latest tag in this repo: `git tag --sort=-v:refname | head -3`
    - Repo file versions: read `version` from `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, `package.json` — flag any disagreement between them (expected historical drift; this run fixes it).
 
@@ -45,11 +45,11 @@ Prepares a backloggr release end-to-end short of publishing: reports the current
 
 7. **Hand off.** Tell the user:
    - The release build is running: give the Actions URL (`gh run list --workflow release.yml --limit 1` for the live run).
-   - When it finishes (~20 min), review the draft at https://github.com/iden0605/backloggr-releases/releases and **publish it with pre-release UNTICKED**.
+   - When it finishes (~20 min), review the draft at https://github.com/iden0605/Backloggr/releases and **publish it with pre-release UNTICKED**.
    - The website download button updates itself the moment the draft is published.
 
 ## Notes
 
 - This skill never publishes the GitHub release and never touches the website — publishing is the user's manual safety gate by design.
 - If `gh` calls fail with auth/scope errors, surface the exact error and stop; don't guess versions from partial data.
-- If the release workflow's `RELEASES_TOKEN` PAT has expired (upload step fails 401/403 on a previous run), remind the user to regenerate it and `gh secret set RELEASES_TOKEN` — but don't block the version bump on it.
+- Releases publish in-repo with the default `GITHUB_TOKEN` — no PAT to maintain (the cross-repo backloggr-releases setup was retired 2026-07-10 when the repo went public under GPL-3.0).
