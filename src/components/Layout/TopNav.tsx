@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { check } from "@tauri-apps/plugin-updater";
+import { useAppStore } from "../../store/useAppStore";
 
 const navItems = [
   { to: "/", label: "Dashboard", end: true },
@@ -24,6 +26,17 @@ interface CurrentlyPlaying {
  */
 export function TopNav({ solid }: { solid: boolean }) {
   const [nowPlaying, setNowPlaying] = useState<CurrentlyPlaying | null>(null);
+  const updateAvailable = useAppStore((s) => s.updateAvailable);
+  const setUpdateAvailable = useAppStore((s) => s.setUpdateAvailable);
+
+  // One quiet update check per app run (TopNav mounts once). An available update puts a
+  // dot on the Settings nav item; the About card there owns the actual install flow.
+  // Dev builds / offline just fail silently.
+  useEffect(() => {
+    check()
+      .then((update) => update && setUpdateAvailable(update.version))
+      .catch(() => {});
+  }, [setUpdateAvailable]);
 
   useEffect(() => {
     const load = () =>
@@ -78,6 +91,13 @@ export function TopNav({ solid }: { solid: boolean }) {
               {({ isActive }) => (
                 <>
                   {label}
+                  {/* Update-available marker — rust is the palette's "something is live" color. */}
+                  {to === "/settings" && updateAvailable && (
+                    <span
+                      className="ml-1.5 h-1.5 w-1.5 rounded-full bg-accent"
+                      title={`Update available — v${updateAvailable}`}
+                    />
+                  )}
                   <span
                     className={`absolute inset-x-3 bottom-0 h-0.5 rounded-full bg-accent transition-opacity duration-150 ${
                       isActive ? "opacity-100" : "opacity-0"

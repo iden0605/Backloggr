@@ -55,6 +55,10 @@ interface AppState {
   // leaves the Discover section entirely, which is what triggers a rediscover.
   forYouRecs: { reasoning: string; games: RecommendedGame[] } | null;
   setForYouRecs: (recs: { reasoning: string; games: RecommendedGame[] } | null) => void;
+  // Version string of an available in-app update (TopNav's startup check sets it; the
+  // Settings nav item shows a dot, and the About card offers the install).
+  updateAvailable: string | null;
+  setUpdateAvailable: (version: string | null) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -74,4 +78,6 @@ export const useAppStore = create<AppState>((set) => ({
   setChatHydrated: (hydrated) => set({ chatHydrated: hydrated }),
   forYouRecs: null,
   setForYouRecs: (recs) => set({ forYouRecs: recs }),
+  updateAvailable: null,
+  setUpdateAvailable: (version) => set({ updateAvailable: version }),
 }));

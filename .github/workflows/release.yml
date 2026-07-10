@@ -64,7 +64,18 @@ jobs:
           # Compile-time-baked into steam.rs (option_env!) — a build made without this secret
           # ships with the Steam library import disabled.
           STEAM_API_KEY: ${{ secrets.STEAM_API_KEY }}
+          # Signs the updater artifacts (createUpdaterArtifacts in tauri.conf.json) so installed
+          # apps can verify in-app updates against the pubkey baked into the config. The private
+          # key lives in the repo secret + the dev machine's ~/.tauri/backloggr_updater.key —
+          # losing BOTH means shipped apps can never auto-update again (they'd need a manual
+          # reinstall from the website), so keep the local file backed up. Key has no password.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "backloggr ${{ github.ref_name }}"
           releaseDraft: true
+          # latest.json must point at the MSI updater artifact, not the NSIS one — the
+          # website's download button also prefers .msi, and updating an MSI install with
+          # the NSIS installer leaves two "installed programs" entries.
+          updaterJsonPreferNsis: false

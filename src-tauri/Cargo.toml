@@ -39,6 +39,11 @@ tokio = { version = "1", features = ["full"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 tauri-plugin-autostart = "2.5.1"
+# In-app updates (Settings About card): checks the latest.json asset on the newest published
+# GitHub release, downloads + installs the signed installer; process provides the post-install
+# relaunch. Desktop-only plugins.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 # Only needed for the macOS game-window bounds lookup (CGWindowListCopyWindowInfo), so clips can
 # be cropped to just the game's window — ffmpeg's avfoundation input can only capture whole

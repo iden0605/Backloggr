@@ -69,6 +69,31 @@ Two WASAPI constraints shape the implementation — keep them in mind before tou
 
 The feed thread is deliberately detached: killing the capture ffmpeg breaks the pipe, and the broken pipe is the thread's exit signal. There is no handle to store and no shutdown ordering to get wrong.
 
+## In-App Updates (tauri-plugin-updater)
+
+Installed apps check the newest **published** release's `latest.json` asset
+(`https://github.com/iden0605/Backloggr/releases/latest/download/latest.json`) on every app
+start (TopNav) and from the Settings About card, which also owns the download → install →
+relaunch flow. Drafts and pre-releases are invisible to the endpoint — publishing the draft
+(pre-release unticked) is what makes an update visible to both the website and installed apps.
+
+Mechanics:
+
+- `createUpdaterArtifacts: true` (tauri.conf.json) makes each build emit signed updater
+  artifacts (`.sig` files; a `.app.tar.gz` on macOS). `tauri-action` generates and uploads
+  `latest.json` pointing at them.
+- Signing: `TAURI_SIGNING_PRIVATE_KEY` repo secret (no password), paired with the `pubkey`
+  baked into `tauri.conf.json`. The private key also lives at
+  `~/.tauri/backloggr_updater.key` on the dev machine — **back it up**; losing both means
+  shipped apps can never auto-update again and every user must manually reinstall.
+- `updaterJsonPreferNsis: false` keeps `latest.json` on the MSI artifact, matching the
+  website's `.msi`-first download — updating an MSI install with the NSIS installer would
+  leave two "installed programs" entries.
+- User data survives updates untouched: everything lives in
+  `%APPDATA%\com.idenc.gamebacklog`, which installers never write to.
+- The first updater-capable release is the one that ships this config; older installs
+  (≤ v0.3.0) have no updater and must download the new installer from the website once.
+
 ## Caveats
 
 - `release.yml` has not yet had a real tag run — the first `v*` push is the shakeout. Since releases are drafts, a broken run publishes nothing.

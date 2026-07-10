@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { SteamImportSection } from "./SteamImport";
+import { UpdateSection } from "./UpdateSection";
 
 const MIN_CLIP_SECONDS = 5;
 const MAX_CLIP_SECONDS = 120;
@@ -161,6 +162,7 @@ export function Settings() {
             </span>
           )}
         </div>
+        <UpdateSection />
       </div>
     </div>
   );
