@@ -890,6 +890,13 @@ fn spawn_ffmpeg(dir: &Path, inputs: &CaptureInputs) -> Option<Child> {
         // stable output frame rate and `-force_key_frames` forces one exactly every
         // SEGMENT_SECONDS.
         .args(["-r", "30"])
+        // Cap the buffer at 1080p: encoding a 1440p/4K desktop in real time is what starved
+        // the encoder (choppy low-fps clips), starved the audio threads (dropouts), and made
+        // the app "heavy" while a game runs — clips don't need more than 1080p. No-op on
+        // smaller screens; -2 keeps the even height libx264 requires.
+        // (`\,` because a bare comma would split the filtergraph; 2*trunc(../2) keeps the
+        // width even — a window-scoped gdigrab capture can be odd-sized, which yuv420p rejects.)
+        .args(["-vf", r"scale=2*trunc(min(1920\,iw)/2):-2"])
         .args(["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"])
         // No-op when the spawn has no audio input; encodes the mic track when it does.
         .args(["-c:a", "aac", "-b:a", "160k"])
@@ -1676,7 +1683,10 @@ pub async fn save_clip(
     }
     cmd.args(["-ss", &format!("{skip_secs:.2}")])
         .args(["-t", &seconds.to_string()])
-        .args(["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"])
+        // superfast, not veryfast: a real Windows test clocked the save at 15+ seconds while a
+        // game was still running — the save competes with the game AND the live capture encode
+        // for CPU, so encode speed beats the marginal file-size win here.
+        .args(["-c:v", "libx264", "-preset", "superfast", "-pix_fmt", "yuv420p"])
         // The audio track (mic) rides through untouched by the video mask — deliberately
         // recorded across tab-outs too. No-op for audio-less buffers.
         .args(["-c:a", "aac", "-b:a", "160k"])

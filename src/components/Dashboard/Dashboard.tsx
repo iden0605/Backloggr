@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Link } from "react-router-dom";
 import { Clapperboard, Sparkles, Timer } from "lucide-react";
+import { CoverImage } from "../shared/CoverImage";
 import { Game } from "../../store/useAppStore";
 
 type Period = "day" | "week" | "month" | "all";
@@ -125,6 +126,7 @@ function Hero({
             src={coverUrl}
             alt=""
             aria-hidden
+            decoding="async"
             className="h-full w-full scale-110 object-cover blur-2xl brightness-[0.45] saturate-[0.85]"
           />
         ) : (
@@ -136,10 +138,11 @@ function Hero({
 
       <div className="relative mx-auto flex min-h-[320px] w-full max-w-5xl items-end gap-7 px-8 pb-10 pt-28">
         {coverUrl && (
-          <img
+          <CoverImage
             src={coverUrl}
             alt={title}
-            className="h-40 w-64 shrink-0 rounded-xl object-cover shadow-[0_24px_48px_-16px_rgba(0,0,0,0.8)] ring-1 ring-white/10"
+            eager
+            className="h-40 w-64 shrink-0 rounded-xl shadow-[0_24px_48px_-16px_rgba(0,0,0,0.8)] ring-1 ring-white/10"
           />
         )}
         <div className="min-w-0 flex-1 animate-fade-up">
@@ -247,15 +250,11 @@ function MostPlayedCard({ weekGames }: { weekGames: GamePlaytime[] }) {
       ) : (
         <>
           <div className="mt-3.5 flex items-center gap-3.5">
-            {top.coverUrl ? (
-              <img
-                src={top.coverUrl}
-                alt={top.name}
-                className="aspect-video w-24 shrink-0 rounded-lg object-cover"
-              />
-            ) : (
-              <div className="aspect-video w-24 shrink-0 rounded-lg bg-gradient-to-br from-surface-alt to-surface" />
-            )}
+            <CoverImage
+              src={top.coverUrl}
+              alt={top.name}
+              className="aspect-video w-24 shrink-0 rounded-lg"
+            />
             <div className="min-w-0">
               <p className="truncate text-[14.5px] font-semibold text-text-hi">{top.name}</p>
               <p className="mt-0.5 font-mono text-[11.5px] text-text-lo">
@@ -288,15 +287,11 @@ function MostPlayedCard({ weekGames }: { weekGames: GamePlaytime[] }) {
 function GameShelfCard({ game }: { game: GamePlaytime }) {
   return (
     <Link to={`/library/${game.gameId}`} className="group w-44 shrink-0 rounded-lg">
-      {game.coverUrl ? (
-        <img
-          src={game.coverUrl}
-          alt={game.name}
-          className="aspect-video w-full rounded-lg object-cover transition-all duration-200 group-hover:-translate-y-1 group-hover:shadow-[0_16px_30px_-12px_rgba(0,0,0,0.7)]"
-        />
-      ) : (
-        <div className="aspect-video w-full rounded-lg bg-gradient-to-br from-surface-alt to-surface transition-transform duration-200 group-hover:-translate-y-1" />
-      )}
+      <CoverImage
+        src={game.coverUrl}
+        alt={game.name}
+        className="aspect-video w-full rounded-lg transition-all duration-200 group-hover:-translate-y-1 group-hover:shadow-[0_16px_30px_-12px_rgba(0,0,0,0.7)]"
+      />
       <p className="mt-2.5 truncate text-[13px] font-medium text-text-hi">{game.name}</p>
       <p className="mt-0.5 font-mono text-[11px] text-text-lo">{formatDuration(game.totalSeconds)}</p>
     </Link>

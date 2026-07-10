@@ -4,7 +4,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
-use sysinfo::System;
+use sysinfo::{ProcessRefreshKind, System, UpdateKind};
 use tauri::{AppHandle, Emitter, Manager};
 
 const POLL_INTERVAL_SECS: u64 = 5;
@@ -42,7 +42,11 @@ pub(crate) fn normalize_exe_name(name: &str) -> String {
 }
 
 fn running_exe_names(sys: &mut System) -> HashSet<String> {
-    sys.refresh_processes();
+    // Only names + exe paths are ever read — skip the per-process CPU/memory/disk/user stats a
+    // bare refresh_processes() collects, which measurably cut this 5s poll's own CPU cost.
+    sys.refresh_processes_specifics(
+        ProcessRefreshKind::new().with_exe(UpdateKind::OnlyIfNotSet),
+    );
     sys.processes()
         .values()
         .map(|p| normalize_exe_name(&p.name().to_string()))
@@ -352,7 +356,9 @@ fn reconcile_dangling_sessions(
 
 pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let mut sys = System::new_all();
+        // System::new() — not new_all(), which also collects CPU/memory/disk snapshots this
+        // tracker never reads; processes are refreshed per poll in running_exe_names.
+        let mut sys = System::new();
         // game_id -> session_id for sessions this tracker is actively tracking (either opened
         // by this run, or re-adopted from a dangling session at startup).
         let mut active: HashMap<i64, i64> = HashMap::new();

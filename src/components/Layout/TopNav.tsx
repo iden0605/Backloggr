@@ -44,7 +44,10 @@ export function TopNav({ solid }: { solid: boolean }) {
   return (
     <header
       className={`absolute inset-x-0 top-0 z-40 transition-colors duration-300 ${
-        solid ? "border-b border-border bg-bg/85 backdrop-blur-md" : "border-b border-transparent"
+        // A translucent bg + backdrop-blur here forced WebView2 to re-blur the content
+        // behind the fixed header on every scrolled frame — the single biggest source of
+        // scroll jank on Windows. Near-opaque bg reads the same over our dark pages.
+        solid ? "border-b border-border bg-bg/95" : "border-b border-transparent"
       }`}
     >
       {/* Readability gradient for when the nav floats over hero art. */}

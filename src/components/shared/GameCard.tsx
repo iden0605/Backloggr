@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ExternalLink, Loader2, X, Monitor, Apple, Smartphone, Gamepad2 } from "lucide-react";
+import { CoverImage } from "./CoverImage";
 
 export interface RawgGameResult {
   rawgId: number;
@@ -120,18 +121,9 @@ export function GameCard({ game, note, footer }: GameCardProps) {
         }}
         className="group flex h-full cursor-pointer select-none flex-col overflow-hidden rounded-xl border border-border bg-surface transition-all duration-200 hover:-translate-y-0.5 hover:border-accent/40 hover:shadow-[0_16px_32px_-16px_rgba(0,0,0,0.6)]"
       >
-        {game.coverUrl ? (
-          <div className="relative h-32 w-full shrink-0 overflow-hidden">
-            <img
-              src={game.coverUrl}
-              alt={game.name}
-              className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.04]"
-            />
-            <div className="absolute inset-0 bg-gradient-to-t from-surface/70 via-transparent to-transparent" />
-          </div>
-        ) : (
-          <div className="h-32 w-full shrink-0 bg-gradient-to-br from-surface-alt to-surface" />
-        )}
+        <CoverImage src={game.coverUrl} alt={game.name} className="h-32 w-full shrink-0">
+          <div className="absolute inset-0 bg-gradient-to-t from-surface/70 via-transparent to-transparent" />
+        </CoverImage>
         <div className="flex flex-1 flex-col p-3">
           <div className="flex items-start justify-between gap-1">
             <p className="truncate text-[13.5px] font-semibold text-text-hi">{game.name}</p>
@@ -199,10 +191,11 @@ export function GameCard({ game, note, footer }: GameCardProps) {
             </div>
 
             {game.coverUrl && (
-              <img
+              <CoverImage
                 src={game.coverUrl}
                 alt={game.name}
-                className="mt-4 h-40 w-full rounded-xl object-cover"
+                eager
+                className="mt-4 h-40 w-full rounded-xl"
               />
             )}
 

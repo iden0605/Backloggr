@@ -186,7 +186,10 @@ pub fn toast(app: &AppHandle, kind: &'static str, text: impl Into<String>) {
     }
     let _ = app.emit_to(OVERLAY_LABEL, "overlay-toast", Toast { kind, text: text.into() });
 
-    let linger_secs = if kind == "saving" { 30 } else { 4 };
+    // The "saving" fallback must outlast the slowest real save — on a loaded Windows machine a
+    // save was observed taking 15-30s+, and the 30s fallback hid the spinner mid-save, leaving
+    // the player convinced the save had silently died before the "saved" toast arrived.
+    let linger_secs = if kind == "saving" { 120 } else { 4 };
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(linger_secs)).await;

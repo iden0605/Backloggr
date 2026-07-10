@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Check, ChevronRight, Film, Play } from "lucide-react";
 import { Clip, ClipPlayer } from "../Clips/Clips";
+import { CoverImage } from "../shared/CoverImage";
 import { RawgGameDetail } from "../shared/GameCard";
 import { GameStatus } from "../../store/useAppStore";
 import { formatPlaytime, formatRelative, LibraryGame } from "./Library";
@@ -153,6 +154,7 @@ export function GameDetail() {
                 src={game.coverUrl}
                 alt=""
                 aria-hidden
+                decoding="async"
                 className="h-full w-full scale-110 object-cover blur-2xl brightness-[0.5] saturate-[0.9]"
               />
             ) : (
@@ -162,13 +164,12 @@ export function GameDetail() {
           </div>
 
           <div className="relative flex flex-wrap items-end gap-6 px-7 pb-6 pt-16">
-            <div className="h-48 w-32 shrink-0 overflow-hidden rounded-[10px] border border-border-strong shadow-[0_18px_40px_rgba(0,0,0,0.5)]">
-              {game.coverUrl ? (
-                <img src={game.coverUrl} alt={game.name} className="h-full w-full object-cover" />
-              ) : (
-                <div className="h-full w-full bg-gradient-to-br from-surface-alt to-surface" />
-              )}
-            </div>
+            <CoverImage
+              src={game.coverUrl}
+              alt={game.name}
+              eager
+              className="h-48 w-32 shrink-0 rounded-[10px] border border-border-strong shadow-[0_18px_40px_rgba(0,0,0,0.5)]"
+            />
 
             <div className="min-w-0 flex-1">
               <h1 className="page-title truncate text-[28px]">{game.name}</h1>
@@ -274,6 +275,8 @@ export function GameDetail() {
                       <img
                         src={convertFileSrc(clip.thumbnailPath)}
                         alt={clip.title ?? "Clip thumbnail"}
+                        loading="lazy"
+                        decoding="async"
                         className="h-full w-full object-cover"
                       />
                     ) : (

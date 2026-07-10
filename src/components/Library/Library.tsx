@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Link, useNavigate } from "react-router-dom";
 import { Check, LibraryBig, Search as SearchIcon, X } from "lucide-react";
+import { CoverImage } from "../shared/CoverImage";
 import { EmptyState } from "../shared/EmptyState";
 import { Select } from "../shared/Select";
 import { Game } from "../../store/useAppStore";
@@ -304,17 +305,12 @@ function LibraryCard({
       onClick={onOpen}
       className="group relative aspect-[2/3] overflow-hidden rounded-xl border border-border text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-border-strong"
     >
-      {game.coverUrl ? (
-        <img
-          src={game.coverUrl}
-          alt={game.name}
-          className={`absolute inset-0 h-full w-full object-cover ${
-            notForMe ? "brightness-75 grayscale-[0.55]" : ""
-          }`}
-        />
-      ) : (
-        <div className="absolute inset-0 bg-gradient-to-br from-surface-alt to-surface" />
-      )}
+      <CoverImage
+        src={game.coverUrl}
+        alt={game.name}
+        className="absolute inset-0"
+        imgClassName={notForMe ? "brightness-75 grayscale-[0.55]" : ""}
+      />
 
       {/* Name stays readable over any art; the veil swaps in stats on hover. */}
       <div className="absolute inset-0 flex items-end bg-gradient-to-t from-bg/85 via-bg/20 to-transparent p-2.5 opacity-100 transition-opacity duration-150 group-hover:opacity-0">
@@ -330,18 +326,18 @@ function LibraryCard({
 
       <div className="absolute left-2 top-2 flex gap-1.5">
         {live && (
-          <span className="flex items-center gap-1.5 rounded-md bg-bg/75 px-1.5 py-1 font-mono text-[9px] uppercase tracking-[0.08em] text-text-hi backdrop-blur-sm">
+          <span className="flex items-center gap-1.5 rounded-md bg-bg/90 px-1.5 py-1 font-mono text-[9px] uppercase tracking-[0.08em] text-text-hi">
             <span className="h-[5px] w-[5px] animate-pulse-soft rounded-full bg-accent" />
             Playing
           </span>
         )}
         {game.status === "completed" && (
-          <span className="flex items-center gap-1 rounded-md bg-bg/75 px-1.5 py-1 font-mono text-[9px] uppercase tracking-[0.08em] text-success backdrop-blur-sm">
+          <span className="flex items-center gap-1 rounded-md bg-bg/90 px-1.5 py-1 font-mono text-[9px] uppercase tracking-[0.08em] text-success">
             <Check className="h-2.5 w-2.5" /> Completed
           </span>
         )}
         {notForMe && (
-          <span className="rounded-md bg-bg/75 px-1.5 py-1 font-mono text-[9px] uppercase tracking-[0.08em] text-text-lo backdrop-blur-sm">
+          <span className="rounded-md bg-bg/90 px-1.5 py-1 font-mono text-[9px] uppercase tracking-[0.08em] text-text-lo">
             Not for me
           </span>
         )}

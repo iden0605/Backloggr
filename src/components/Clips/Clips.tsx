@@ -121,13 +121,15 @@ function ClipCard({
           <img
             src={convertFileSrc(clip.thumbnailPath)}
             alt={clip.title ?? "Clip thumbnail"}
+            loading="lazy"
+            decoding="async"
             className="h-full w-full object-cover"
           />
         ) : (
           <Film className="h-8 w-8 text-text-lo/50" />
         )}
         <span className="absolute inset-0 flex items-center justify-center bg-bg/0 opacity-0 transition-opacity group-hover:bg-bg/40 group-hover:opacity-100">
-          <span className="flex h-10 w-10 items-center justify-center rounded-full bg-bg/75 backdrop-blur-sm">
+          <span className="flex h-10 w-10 items-center justify-center rounded-full bg-bg/90">
             <Play className="ml-0.5 h-4 w-4 text-text-hi" />
           </span>
         </span>

@@ -132,10 +132,14 @@ fn run(mut stdin: ChildStdin, spec: PipeAudioSpec) {
             }
             written += chunk.len() as u64;
         }
-        // 50ms of slack before padding kicks in, so real packets that are merely late don't get
-        // silence spliced in front of them; catch-up is capped at 1s per tick.
+        // Slack before padding kicks in, so real packets that are merely late don't get silence
+        // spliced in front of them; catch-up is capped at 1s per tick. 500ms, not the original
+        // 50ms: under game+encode CPU load WASAPI callbacks arrive in late bursts well past
+        // 50ms, and the tight threshold injected silence *and then* wrote the late real packets
+        // after it — heard as game audio constantly cutting in and out. The cost of the wider
+        // slack is only that a genuinely silent stretch stays unpadded for its first 500ms.
         let target = started.elapsed().as_millis() as u64 * byte_rate / 1000;
-        if target > written + byte_rate / 20 {
+        if target > written + byte_rate / 2 {
             let mut need =
                 ((target - written).min(byte_rate) as usize) / frame_bytes * frame_bytes;
             while need > 0 {
