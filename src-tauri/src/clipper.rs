@@ -168,12 +168,16 @@ pub struct CaptureState(pub Mutex<CaptureSlot>);
 /// saves would race on the same second-resolution work and produce interleaved ffmpeg runs.
 static SAVE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
+/// The SaveGuard rejection message — matched by `save_clip_from_hotkey` so a double hotkey
+/// press doesn't flash a "failed" toast over the first save's live "saving" spinner.
+const SAVE_IN_PROGRESS_MSG: &str = "A clip is already being saved.";
+
 struct SaveGuard;
 
 impl SaveGuard {
     fn acquire() -> Result<Self, String> {
         if SAVE_IN_PROGRESS.swap(true, Ordering::SeqCst) {
-            Err("A clip is already being saved.".into())
+            Err(SAVE_IN_PROGRESS_MSG.into())
         } else {
             Ok(SaveGuard)
         }
@@ -1020,6 +1024,9 @@ pub fn ensure_capture(app: &AppHandle, exe_name: Option<&str>) {
             Ok(None) => {
                 if !*window_scoped && !scope_blocked && window_now_resolvable(exe_name) {
                     let _ = child.kill();
+                    // Reap immediately (SIGKILL exits fast) — a killed-but-unwaited child
+                    // stays a zombie on macOS until the app itself exits.
+                    let _ = child.wait();
                     (true, true)
                 } else {
                     // Healthy run — a past strike was transient, not the audio input.
@@ -1143,6 +1150,8 @@ pub fn stop(app: &AppHandle) {
     drop(slot);
 
     let _ = capture.child.kill();
+    // Reap the killed child — without wait() it lingers as a zombie process on macOS.
+    let _ = capture.child.wait();
     let dir = buffer_dir(app);
     let _ = std::fs::remove_file(capture_pid_file(&dir));
     wipe_dir(&dir);
@@ -1245,6 +1254,9 @@ pub fn set_mic_enabled(
     }
     if let Some(capture) = slot.phase.as_mut() {
         let _ = capture.child.kill();
+        // Reap now rather than leaving a zombie until app exit; the watchdog's next poll
+        // sees the (already-reaped) dead child via try_wait and respawns.
+        let _ = capture.child.wait();
     }
     Ok(())
 }
@@ -1800,8 +1812,13 @@ pub fn save_clip_from_hotkey(app: AppHandle) {
             Ok(_) => {}
             Err(e) => {
                 eprintln!("clipper: hotkey save failed: {e}");
-                crate::overlay::toast(&app, "failed", e.as_str());
-                let _ = app.emit("clip-save-failed", e);
+                // A double press hits the SaveGuard while the first save is mid-flight —
+                // that's not a failure, and toasting it would replace the live "saving"
+                // spinner with a bogus "failed" until the real terminal toast arrives.
+                if e != SAVE_IN_PROGRESS_MSG {
+                    crate::overlay::toast(&app, "failed", e.as_str());
+                    let _ = app.emit("clip-save-failed", e);
+                }
             }
         }
     });

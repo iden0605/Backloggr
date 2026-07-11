@@ -219,13 +219,14 @@ fn detect_unregistered_games(
 /// Looks up `guessed_name` on RAWG (best-effort — a miss or API failure just means the game gets
 /// added with the guessed name and no cover art rather than blocking tracking), then creates or
 /// links a backlog entry for it and immediately opens its first session. Runs the network call
-/// *before* touching the DB so the connection mutex is never held across an `.await`.
+/// *before* touching the DB so the connection mutex is never held across an `.await`. Returns
+/// the game's row id so the caller can exempt it from the stale-session sweep this poll.
 async fn auto_register_and_track(
     app: &AppHandle,
     active: &mut HashMap<i64, i64>,
     exe_name: &str,
     guessed_name: &str,
-) {
+) -> Option<i64> {
     let search_query = humanize_name(guessed_name);
     let display_fallback = if search_query.is_empty() {
         guessed_name.to_string()
@@ -238,14 +239,19 @@ async fn auto_register_and_track(
     let db = app.state::<DbState>();
     let conn = match db.0.lock() {
         Ok(c) => c,
-        Err(_) => return,
+        Err(_) => return None,
     };
 
+    // The conflict branch also applies the wishlist → library rule: running a game means you
+    // own it, and this path is the FIRST launch for any wishlisted game without an exe link
+    // (the tracked-games loop only handles games that already have one).
     let game: Result<(i64, String), _> = match &rawg_match {
         Some(m) => conn.query_row(
             "INSERT INTO games (rawg_id, name, cover_url, genre, platform, status, exe_name)
              VALUES (?1, ?2, ?3, ?4, ?5, 'backlog', ?6)
-             ON CONFLICT(rawg_id) DO UPDATE SET exe_name = excluded.exe_name
+             ON CONFLICT(rawg_id) DO UPDATE SET
+                exe_name = excluded.exe_name,
+                status = CASE WHEN games.status = 'wishlist' THEN 'backlog' ELSE games.status END
              RETURNING id, name",
             rusqlite::params![m.rawg_id, m.name, m.cover_url, m.genre, m.platform, exe_name],
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
@@ -257,7 +263,15 @@ async fn auto_register_and_track(
         ),
     };
 
-    let Ok((game_id, name)) = game else { return };
+    let Ok((game_id, name)) = game else { return None };
+
+    // The RAWG match can resolve to a game that's ALREADY being tracked under a different exe
+    // name (an update renamed the executable, or a second exe under the same install matched
+    // the same rawg_id). Opening a second session would orphan the first in `active` — keep
+    // the original session and let the updated exe_name take over from the next poll.
+    if active.contains_key(&game_id) {
+        return Some(game_id);
+    }
 
     let _ = app.emit("game-auto-added", GameAutoAdded { game_id, name });
 
@@ -273,6 +287,7 @@ async fn auto_register_and_track(
             SessionStarted { game_id, session_id, started_at },
         );
     }
+    Some(game_id)
 }
 
 /// Resolves sessions left open (`ended_at IS NULL`) by a previous run that never shut down
@@ -419,14 +434,55 @@ pub fn start(app: AppHandle) {
                 .map(|(_, exe)| normalize_exe_name(exe))
                 .collect();
             let mut newly_registered_exe: Option<String> = None;
+            let mut registered_this_poll: HashSet<i64> = HashSet::new();
             for (exe_name, guessed_name) in detect_unregistered_games(&sys, &tracked_exe_names) {
-                auto_register_and_track(&app, &mut active, &exe_name, &guessed_name).await;
+                if let Some(game_id) =
+                    auto_register_and_track(&app, &mut active, &exe_name, &guessed_name).await
+                {
+                    registered_this_poll.insert(game_id);
+                }
                 newly_registered_exe = Some(exe_name);
             }
 
             {
                 let db = app.state::<DbState>();
                 let Ok(conn) = db.0.lock() else { continue };
+
+                // A game can leave `tracked_games` while its session is still open — deleted
+                // from the library mid-session, or its exe link cleared. The loop below only
+                // visits tracked games, so without this sweep the stale `active` entry lingers
+                // forever: capture keeps recording with no game running, and an unlinked
+                // game's session row never closes. Games auto-registered THIS poll are exempt
+                // (they were registered after `tracked_games` was fetched).
+                let tracked_ids: HashSet<i64> =
+                    tracked_games.iter().map(|(id, _)| *id).collect();
+                let stale: Vec<(i64, i64)> = active
+                    .iter()
+                    .filter(|(game_id, _)| {
+                        !tracked_ids.contains(game_id) && !registered_this_poll.contains(game_id)
+                    })
+                    .map(|(g, s)| (*g, *s))
+                    .collect();
+                for (game_id, session_id) in stale {
+                    active.remove(&game_id);
+                    // Deleted games take their session rows with them (delete_game's
+                    // transaction), so this UPDATE simply misses then; an unlinked game's
+                    // open row closes out at its last heartbeat.
+                    let duration: Result<i64, _> = conn.query_row(
+                        "UPDATE sessions SET ended_at = COALESCE(last_seen_at, started_at),
+                            duration_seconds = CAST((julianday(COALESCE(last_seen_at, started_at)) - julianday(started_at)) * 86400 AS INTEGER)
+                         WHERE id = ?1 AND ended_at IS NULL
+                         RETURNING duration_seconds",
+                        [session_id],
+                        |row| row.get(0),
+                    );
+                    if let Ok(duration_seconds) = duration {
+                        let _ = app.emit(
+                            "session-ended",
+                            SessionEnded { game_id, session_id, duration_seconds },
+                        );
+                    }
+                }
 
                 for (game_id, exe_name) in &tracked_games {
                     let is_running = running.contains(&normalize_exe_name(exe_name));

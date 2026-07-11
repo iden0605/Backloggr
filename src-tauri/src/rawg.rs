@@ -13,7 +13,17 @@ const RAWG_BASE_URL: &str = "https://api.rawg.io/api";
 /// requests.
 pub(crate) fn http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(reqwest::Client::new)
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            // Without a timeout a single hung request leaves its invoke pending forever —
+            // the chat's thinking bubble, For You's loader, and the Steam fetch all have
+            // `loading` guards that then block any retry. 40s leaves room for the slowest
+            // real caller (the worker's Groq narrow round on a long history).
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(40))
+            .build()
+            .expect("failed to build HTTP client")
+    })
 }
 
 #[derive(Deserialize)]

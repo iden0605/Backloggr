@@ -20,7 +20,7 @@ pub fn show_main_window(app: &AppHandle) {
 /// Build the tray icon. Called once from setup; the returned tray lives for the app's lifetime
 /// (tauri keeps it registered internally by id).
 pub fn init(app: &AppHandle) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "open", "Open Game Backlog", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "Open backloggr", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &PredefinedMenuItem::separator(app)?, &quit])?;
 
@@ -30,7 +30,7 @@ pub fn init(app: &AppHandle) -> tauri::Result<()> {
                 .expect("app bundle has window icons configured")
                 .clone(),
         )
-        .tooltip("Game Backlog")
+        .tooltip("backloggr")
         .menu(&menu)
         // Left-click opens the app (the Medal/Discord convention); the menu stays on right-click.
         .show_menu_on_left_click(false)

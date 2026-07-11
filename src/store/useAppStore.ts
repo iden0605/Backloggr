@@ -34,8 +34,6 @@ export interface Game {
 }
 
 interface AppState {
-  currentlyPlayingId: number | null;
-  setCurrentlyPlayingId: (id: number | null) => void;
   // Discover "Ask AI" chat state, lifted out of the component so it survives route
   // navigation and tab switches instead of resetting every time ChatTab unmounts.
   chatTurns: ChatTurn[];
@@ -62,8 +60,6 @@ interface AppState {
 }
 
 export const useAppStore = create<AppState>((set) => ({
-  currentlyPlayingId: null,
-  setCurrentlyPlayingId: (id) => set({ currentlyPlayingId: id }),
   chatTurns: [],
   chatQuestionsAsked: 0,
   setChatTurns: (turns) =>

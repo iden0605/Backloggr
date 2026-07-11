@@ -1,6 +1,4 @@
-import { useEffect } from "react";
 import { Routes, Route } from "react-router-dom";
-import { listen } from "@tauri-apps/api/event";
 import { Shell } from "./components/Layout/Shell";
 import { Dashboard } from "./components/Dashboard/Dashboard";
 import { Library } from "./components/Library/Library";
@@ -10,32 +8,8 @@ import { DiscoverChat } from "./components/Discover/DiscoverChat";
 import { Clips } from "./components/Clips/Clips";
 import { Settings } from "./components/Settings/Settings";
 import { OverlayToast } from "./components/Overlay/OverlayToast";
-import { useAppStore } from "./store/useAppStore";
-
-interface SessionStarted {
-  gameId: number;
-}
-interface SessionEnded {
-  gameId: number;
-}
 
 function App() {
-  const setCurrentlyPlayingId = useAppStore((s) => s.setCurrentlyPlayingId);
-
-  useEffect(() => {
-    const unlistenStarted = listen<SessionStarted>("session-started", (event) => {
-      setCurrentlyPlayingId(event.payload.gameId);
-    });
-    const unlistenEnded = listen<SessionEnded>("session-ended", () => {
-      setCurrentlyPlayingId(null);
-    });
-
-    return () => {
-      unlistenStarted.then((f) => f());
-      unlistenEnded.then((f) => f());
-    };
-  }, [setCurrentlyPlayingId]);
-
   return (
     <Routes>
       {/* Rendered inside the separate in-game overlay window, not the main app shell. */}
