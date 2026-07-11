@@ -2,6 +2,10 @@ use rusqlite::Connection;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+pub mod games;
+pub mod sessions;
+pub mod settings;
+
 pub struct DbState(pub Mutex<Connection>);
 
 const SCHEMA: &str = "
@@ -106,6 +110,15 @@ pub fn init(app_data_dir: &PathBuf) -> Connection {
         .expect("failed to set WAL mode");
     conn.pragma_update(None, "synchronous", "NORMAL")
         .expect("failed to set synchronous mode");
+    init_schema(&conn);
+    conn
+}
+
+/// Everything schema-shaped, against ANY connection: the CREATE TABLE batch, the
+/// add_column_if_missing migrations, and the legacy-status normalization. Split from
+/// `init` so tests can run the exact production schema on `Connection::open_in_memory()`
+/// (the WAL/synchronous pragmas in `init` are file-backed config, not logic, and stay out).
+pub fn init_schema(conn: &Connection) {
     conn.pragma_update(None, "foreign_keys", "ON")
         .expect("failed to enable foreign keys");
     conn.execute_batch(SCHEMA).expect("failed to initialize schema");
@@ -114,9 +127,9 @@ pub fn init(app_data_dir: &PathBuf) -> Connection {
     // running, so a crash/restart can be closed out near the true end time instead of at
     // `started_at` (0 duration) or "now" (inflated duration). ended_estimated flags sessions
     // closed this way (by tracker::reconcile_dangling_sessions) rather than at natural exit.
-    add_column_if_missing(&conn, "sessions", "last_seen_at", "last_seen_at DATETIME");
+    add_column_if_missing(conn, "sessions", "last_seen_at", "last_seen_at DATETIME");
     add_column_if_missing(
-        &conn,
+        conn,
         "sessions",
         "ended_estimated",
         "ended_estimated BOOLEAN DEFAULT 0",
@@ -125,7 +138,7 @@ pub fn init(app_data_dir: &PathBuf) -> Connection {
     // steam_appid: set on games imported (or linked) via the Steam library import, so a
     // re-import can skip everything already brought in even when the RAWG match differs
     // between runs.
-    add_column_if_missing(&conn, "games", "steam_appid", "steam_appid INTEGER");
+    add_column_if_missing(conn, "games", "steam_appid", "steam_appid INTEGER");
 
     // Library model (v2): activity ("playing now" / played / never played) is derived from
     // sessions, not stored. The status column keeps its original CHECK values but they now
@@ -134,6 +147,11 @@ pub fn init(app_data_dir: &PathBuf) -> Connection {
     // no longer writes it; normalize any rows left over from the queue era.
     conn.execute("UPDATE games SET status = 'backlog' WHERE status = 'playing'", [])
         .expect("failed to normalize legacy 'playing' statuses");
+}
 
+#[cfg(test)]
+pub(crate) fn test_conn() -> Connection {
+    let conn = Connection::open_in_memory().expect("failed to open in-memory db");
+    init_schema(&conn);
     conn
 }

@@ -45,12 +45,7 @@ pub async fn fetch_steam_library(
     });
 
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT INTO settings (key, value) VALUES ('steam_profile', ?1)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        [profile.trim()],
-    )
-    .map_err(|e| e.to_string())?;
+    crate::db::settings::set(&conn, "steam_profile", profile.trim()).map_err(|e| e.to_string())?;
 
     let existing_appids: std::collections::HashSet<i64> = conn
         .prepare("SELECT steam_appid FROM games WHERE steam_appid IS NOT NULL")
@@ -88,13 +83,7 @@ pub async fn fetch_steam_library(
 #[tauri::command]
 pub fn get_steam_profile(db: State<DbState>) -> Result<Option<String>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    conn.query_row(
-        "SELECT value FROM settings WHERE key = 'steam_profile'",
-        [],
-        |row| row.get(0),
-    )
-    .optional()
-    .map_err(|e| e.to_string())
+    crate::db::settings::get(&conn, "steam_profile").map_err(|e| e.to_string())
 }
 
 #[derive(Deserialize, Clone)]

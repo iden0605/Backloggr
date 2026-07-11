@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
+import { invoke } from "@tauri-apps/api/core";
 import { TopNav } from "./TopNav";
 import { ErrorBoundary } from "../shared/ErrorBoundary";
 import { useAppStore } from "../../store/useAppStore";
@@ -8,6 +9,13 @@ export function Shell() {
   const location = useLocation();
   const mainRef = useRef<HTMLElement>(null);
   const [scrolled, setScrolled] = useState(false);
+
+  // Load the configured clip hotkey once — every page's hotkey copy reads it from the store.
+  useEffect(() => {
+    invoke<string>("get_clip_hotkey")
+      .then((hotkey) => useAppStore.getState().setClipHotkey(hotkey))
+      .catch(() => {});
+  }, []);
 
   // The scroll container is shared across routes — reset position (and the nav's
   // solid state) when navigating so pages never open mid-scroll.

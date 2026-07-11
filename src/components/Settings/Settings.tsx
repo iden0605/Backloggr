@@ -3,9 +3,24 @@ import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { SteamImportSection } from "./SteamImport";
 import { UpdateSection } from "./UpdateSection";
+import { Select } from "../shared/Select";
+import { useAppStore } from "../../store/useAppStore";
 
 const MIN_CLIP_SECONDS = 5;
 const MAX_CLIP_SECONDS = 120;
+
+// Curated combos only — every one parses for tauri-plugin-global-shortcut on both OSes,
+// and none collide with common in-game binds the way bare letter keys would.
+const HOTKEY_OPTIONS = [
+  "Alt+F9",
+  "Alt+F10",
+  "Alt+F8",
+  "Ctrl+F9",
+  "Ctrl+Shift+S",
+  "Ctrl+Shift+C",
+  "F8",
+  "F10",
+].map((value) => ({ value, label: value }));
 
 // On-state is chalk, not rust — primary/affirmative controls are chalk in this palette;
 // rust stays reserved for live markers. The off state needs a ring + gray knob to be
@@ -30,6 +45,8 @@ function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
 }
 
 export function Settings() {
+  const clipHotkey = useAppStore((s) => s.clipHotkey);
+  const setClipHotkey = useAppStore((s) => s.setClipHotkey);
   const [clipSeconds, setClipSeconds] = useState<number | null>(null);
   const [micEnabled, setMicEnabled] = useState<boolean | null>(null);
   const [autostart, setAutostart] = useState<boolean | null>(null);
@@ -59,6 +76,18 @@ export function Settings() {
       setTimeout(() => setSaved(false), 1500);
     } catch (err) {
       setError(String(err));
+    }
+  }
+
+  async function commitHotkey(hotkey: string) {
+    const previous = clipHotkey;
+    setClipHotkey(hotkey);
+    try {
+      await invoke("set_clip_hotkey", { hotkey });
+    } catch (err) {
+      // Registration failed (combo taken by another app) — the old hotkey is still live.
+      setError(String(err));
+      setClipHotkey(previous);
     }
   }
 
@@ -119,7 +148,7 @@ export function Settings() {
           <div>
             <p className="text-[13.5px] font-medium text-text-hi">Clip length</p>
             <p className="mt-0.5 text-xs text-text-lo">
-              How much of the buffer <kbd className="kbd">Alt+F9</kbd> saves.
+              How much of the buffer <kbd className="kbd">{clipHotkey}</kbd> saves.
             </p>
           </div>
           {clipSeconds !== null && (
@@ -137,6 +166,16 @@ export function Settings() {
               {saved && <span className="text-xs text-success">Saved</span>}
             </div>
           )}
+        </div>
+
+        <div className="mt-4 flex items-center justify-between gap-4 border-t border-border pt-4">
+          <div>
+            <p className="text-[13.5px] font-medium text-text-hi">Clip hotkey</p>
+            <p className="mt-0.5 text-xs text-text-lo">
+              The key combo that saves a clip while a game is running. Applies immediately.
+            </p>
+          </div>
+          <Select value={clipHotkey} options={HOTKEY_OPTIONS} onChange={commitHotkey} />
         </div>
 
         <div className="mt-4 flex items-center justify-between gap-4 border-t border-border pt-4">

@@ -7,7 +7,7 @@ import { ArrowLeft, Check, ChevronRight, Film, Play } from "lucide-react";
 import { Clip, ClipPlayer } from "../Clips/Clips";
 import { CoverImage } from "../shared/CoverImage";
 import { RawgGameDetail } from "../shared/GameCard";
-import { GameStatus } from "../../store/useAppStore";
+import { GameStatus, useAppStore } from "../../store/useAppStore";
 import { formatPlaytime, formatRelative, LibraryGame } from "./Library";
 
 interface GameStats {
@@ -34,6 +34,7 @@ export function GameDetail() {
   const { id } = useParams();
   const gameId = Number(id);
   const navigate = useNavigate();
+  const clipHotkey = useAppStore((s) => s.clipHotkey);
 
   const [game, setGame] = useState<LibraryGame | null>(null);
   const [stats, setStats] = useState<GameStats | null>(null);
@@ -260,8 +261,8 @@ export function GameDetail() {
             </h2>
             {clips.length === 0 ? (
               <p className="mt-3 text-[13px] text-text-lo">
-                No clips for this game yet — hit <kbd className="kbd">Alt+F9</kbd> while playing to
-                save one.
+                No clips for this game yet — hit <kbd className="kbd">{clipHotkey}</kbd> while
+                playing to save one.
               </p>
             ) : (
               <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">

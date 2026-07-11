@@ -17,10 +17,6 @@ use std::sync::Mutex;
 use tauri::Manager;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
-// Default "save the last N seconds" hotkey — hardcoded for now, same pattern as the RAWG key /
-// worker URL, until Settings (Stage 8) grows a real capture-settings section to make it
-// user-configurable.
-const CLIP_HOTKEY: &str = "Alt+F9";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -66,6 +62,12 @@ pub fn run() {
                 .app_data_dir()
                 .expect("failed to resolve app data dir");
             let conn = db::init(&app_data_dir);
+            // The user's chosen clip hotkey (task 26) — read before the connection moves
+            // into managed state, registered below once the shortcut plugin is up.
+            let clip_hotkey = db::settings::get(&conn, "clip_hotkey")
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| commands::DEFAULT_CLIP_HOTKEY.to_string());
             app.manage(DbState(Mutex::new(conn)));
             // A previous life of the app that died without its exit cleanup (crash, force-kill,
             // dev rebuild) may have left its capture ffmpeg running — kill it before anything
@@ -75,8 +77,8 @@ pub fn run() {
             // `sessions` rows — nothing records while no game is being played.
             tracker::start(app.handle().clone());
 
-            if let Err(e) = app.global_shortcut().register(CLIP_HOTKEY) {
-                eprintln!("clipper: failed to register hotkey {CLIP_HOTKEY}: {e}");
+            if let Err(e) = app.global_shortcut().register(clip_hotkey.as_str()) {
+                eprintln!("clipper: failed to register hotkey {clip_hotkey}: {e}");
             }
             // Clip feedback shows through the in-game overlay window, not OS notifications —
             // macOS suppresses notification banners while a fullscreen app is frontmost, which
@@ -135,6 +137,8 @@ pub fn run() {
             clipper::set_mic_enabled,
             commands::get_autostart_enabled,
             commands::set_autostart_enabled,
+            commands::get_clip_hotkey,
+            commands::set_clip_hotkey,
             commands::fetch_steam_library,
             commands::import_steam_games,
             commands::get_steam_profile

@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { Film, Play, Trash2 } from "lucide-react";
 import { EmptyState } from "../shared/EmptyState";
+import { useAppStore } from "../../store/useAppStore";
 
 export interface Clip {
   id: number;
@@ -29,6 +30,7 @@ function formatCreatedAt(raw: string): string {
 }
 
 export function Clips() {
+  const clipHotkey = useAppStore((s) => s.clipHotkey);
   const [clips, setClips] = useState<Clip[]>([]);
   const [clipSeconds, setClipSeconds] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -75,7 +77,7 @@ export function Clips() {
     <div>
       <h1 className="page-title text-[26px]">Clips</h1>
       <p className="mt-1.5 text-[13.5px] text-text-lo">
-        Press <kbd className="kbd">Alt+F9</kbd> anytime while a game is running to save the
+        Press <kbd className="kbd">{clipHotkey}</kbd> anytime while a game is running to save the
         last {clipSeconds ?? "30"} seconds. Adjustable in Settings. Nothing records while
         you're not playing.
       </p>
@@ -85,7 +87,7 @@ export function Clips() {
       {clips.length === 0 ? (
         <div className="mt-8">
           <EmptyState icon={Film} title="No clips yet">
-            Launch a game and hit <kbd className="kbd">Alt+F9</kbd> after a good moment — the
+            Launch a game and hit <kbd className="kbd">{clipHotkey}</kbd> after a good moment — the
             clip lands here, attached to the game it came from.
           </EmptyState>
         </div>

@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Link } from "react-router-dom";
 import { Clapperboard, Sparkles, Timer } from "lucide-react";
 import { CoverImage } from "../shared/CoverImage";
-import { Game } from "../../store/useAppStore";
+import { Game, useAppStore } from "../../store/useAppStore";
 
 type Period = "day" | "week" | "month" | "all";
 
@@ -299,6 +299,7 @@ function GameShelfCard({ game }: { game: GamePlaytime }) {
 }
 
 export function Dashboard() {
+  const clipHotkey = useAppStore((s) => s.clipHotkey);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [currentlyPlaying, setCurrentlyPlaying] = useState<CurrentlyPlaying | null>(null);
   const [libraryGames, setLibraryGames] = useState<LibraryGame[]>([]);
@@ -375,7 +376,7 @@ export function Dashboard() {
       {
         icon: Clapperboard,
         title: "Clip the last 30 seconds",
-        copy: "A rolling buffer records while you play. Hit Alt+F9 after a great moment and it's saved.",
+        copy: `A rolling buffer records while you play. Hit ${clipHotkey} after a great moment and it's saved.`,
       },
       {
         icon: Sparkles,

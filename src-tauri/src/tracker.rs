@@ -1,4 +1,4 @@
-use crate::db::DbState;
+use crate::db::{games, sessions, DbState};
 use crate::rawg;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -242,24 +242,21 @@ async fn auto_register_and_track(
         Err(_) => return None,
     };
 
-    // The conflict branch also applies the wishlist → library rule: running a game means you
-    // own it, and this path is the FIRST launch for any wishlisted game without an exe link
-    // (the tracked-games loop only handles games that already have one).
-    let game: Result<(i64, String), _> = match &rawg_match {
-        Some(m) => conn.query_row(
-            "INSERT INTO games (rawg_id, name, cover_url, genre, platform, status, exe_name)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'backlog', ?6)
-             ON CONFLICT(rawg_id) DO UPDATE SET
-                exe_name = excluded.exe_name,
-                status = CASE WHEN games.status = 'wishlist' THEN 'backlog' ELSE games.status END
-             RETURNING id, name",
-            rusqlite::params![m.rawg_id, m.name, m.cover_url, m.genre, m.platform, exe_name],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+    // The upsert's conflict branch also applies the wishlist → library rule: running a game
+    // means you own it, and this path is the FIRST launch for any wishlisted game without an
+    // exe link (the tracked-games loop only handles games that already have one).
+    let game = match &rawg_match {
+        Some(m) => games::upsert_auto_registered(
+            &conn,
+            Some(m.rawg_id),
+            &m.name,
+            m.cover_url.as_deref(),
+            m.genre.as_deref(),
+            m.platform.as_deref(),
+            exe_name,
         ),
-        None => conn.query_row(
-            "INSERT INTO games (name, status, exe_name) VALUES (?1, 'backlog', ?2) RETURNING id, name",
-            rusqlite::params![display_fallback, exe_name],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        None => games::upsert_auto_registered(
+            &conn, None, &display_fallback, None, None, None, exe_name,
         ),
     };
 
@@ -275,12 +272,7 @@ async fn auto_register_and_track(
 
     let _ = app.emit("game-auto-added", GameAutoAdded { game_id, name });
 
-    let session: Result<(i64, String), _> = conn.query_row(
-        "INSERT INTO sessions (game_id, started_at, last_seen_at, auto_tracked) VALUES (?1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1) RETURNING id, started_at",
-        [game_id],
-        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-    );
-    if let Ok((session_id, started_at)) = session {
+    if let Ok((session_id, started_at)) = sessions::open(&conn, game_id) {
         active.insert(game_id, session_id);
         let _ = app.emit(
             "session-started",
@@ -309,61 +301,34 @@ fn reconcile_dangling_sessions(
     running: &HashSet<String>,
     active: &mut HashMap<i64, i64>,
 ) {
-    let dangling: Vec<(i64, i64, Option<String>)> = {
-        let mut stmt = match conn.prepare(
-            "SELECT s.id, s.game_id, g.exe_name
-             FROM sessions s LEFT JOIN games g ON g.id = s.game_id
-             WHERE s.ended_at IS NULL
-             ORDER BY s.game_id, s.started_at DESC",
-        ) {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, Option<String>>(2)?,
-            ))
-        });
-        match rows {
-            Ok(r) => r.filter_map(|x| x.ok()).collect(),
-            Err(_) => return,
-        }
-    };
+    let Ok(dangling) = sessions::dangling(conn) else { return };
 
-    // Only the most recent dangling row per game is eligible for adoption (rows are ordered
-    // newest-first per game above); any older ones — leftover from repeated crashes before a
+    // Only the most recent dangling row per game is eligible for adoption (rows come back
+    // newest-first per game); any older ones — leftover from repeated crashes before a
     // clean run ever happened — are stale and always get closed.
     let mut seen_games: HashSet<i64> = HashSet::new();
 
-    for (session_id, game_id, exe_name) in dangling {
-        let is_first_for_game = seen_games.insert(game_id);
+    for d in dangling {
+        let is_first_for_game = seen_games.insert(d.game_id);
         let is_running = is_first_for_game
-            && exe_name
+            && d.exe_name
                 .as_deref()
                 .map(|e| running.contains(&normalize_exe_name(e)))
                 .unwrap_or(false);
 
         if is_running {
-            active.insert(game_id, session_id);
+            active.insert(d.game_id, d.session_id);
             continue;
         }
 
-        let duration: Result<i64, _> = conn.query_row(
-            "UPDATE sessions SET
-                ended_at = COALESCE(last_seen_at, started_at),
-                duration_seconds = CAST((julianday(COALESCE(last_seen_at, started_at)) - julianday(started_at)) * 86400 AS INTEGER),
-                ended_estimated = 1
-             WHERE id = ?1
-             RETURNING duration_seconds",
-            [session_id],
-            |row| row.get(0),
-        );
-        if let Ok(duration_seconds) = duration {
+        if let Ok(Some(duration_seconds)) = sessions::close_estimated(conn, d.session_id) {
             let _ = app.emit(
                 "session-ended",
-                SessionEnded { game_id, session_id, duration_seconds },
+                SessionEnded {
+                    game_id: d.game_id,
+                    session_id: d.session_id,
+                    duration_seconds,
+                },
             );
         }
     }
@@ -388,9 +353,7 @@ pub fn start(app: AppHandle) {
             if let Ok(conn) = conn {
                 reconcile_dangling_sessions(&app, &conn, &running, &mut active);
                 if let Some(&game_id) = active.keys().next() {
-                    startup_exe = conn
-                        .query_row("SELECT exe_name FROM games WHERE id = ?1", [game_id], |row| row.get(0))
-                        .ok();
+                    startup_exe = games::exe_name(&conn, game_id).ok().flatten();
                 }
             }
             // A game was already running when the app launched (adopted above) — start capture
@@ -410,17 +373,8 @@ pub fn start(app: AppHandle) {
                     Ok(c) => c,
                     Err(_) => continue,
                 };
-                let mut stmt = match conn
-                    .prepare("SELECT id, exe_name FROM games WHERE exe_name IS NOT NULL AND exe_name != ''")
-                {
-                    Ok(s) => s,
-                    Err(_) => continue,
-                };
-                let rows = stmt.query_map([], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-                });
-                match rows {
-                    Ok(r) => r.filter_map(|x| x.ok()).collect(),
+                match games::tracked_exes(&conn) {
+                    Ok(rows) => rows.into_iter().map(|t| (t.id, t.exe_name)).collect(),
                     Err(_) => continue,
                 }
             };
@@ -466,17 +420,9 @@ pub fn start(app: AppHandle) {
                 for (game_id, session_id) in stale {
                     active.remove(&game_id);
                     // Deleted games take their session rows with them (delete_game's
-                    // transaction), so this UPDATE simply misses then; an unlinked game's
-                    // open row closes out at its last heartbeat.
-                    let duration: Result<i64, _> = conn.query_row(
-                        "UPDATE sessions SET ended_at = COALESCE(last_seen_at, started_at),
-                            duration_seconds = CAST((julianday(COALESCE(last_seen_at, started_at)) - julianday(started_at)) * 86400 AS INTEGER)
-                         WHERE id = ?1 AND ended_at IS NULL
-                         RETURNING duration_seconds",
-                        [session_id],
-                        |row| row.get(0),
-                    );
-                    if let Ok(duration_seconds) = duration {
+                    // transaction), so the guarded close simply misses then; an unlinked
+                    // game's open row closes out at its last heartbeat.
+                    if let Ok(Some(duration_seconds)) = sessions::close_orphaned(&conn, session_id) {
                         let _ = app.emit(
                             "session-ended",
                             SessionEnded { game_id, session_id, duration_seconds },
@@ -492,27 +438,16 @@ pub fn start(app: AppHandle) {
                         // Heartbeat: if this process dies without a clean shutdown, the next
                         // startup's reconciliation pass closes the session here, not at started_at.
                         if let Some(session_id) = active.get(game_id) {
-                            let _ = conn.execute(
-                                "UPDATE sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?1",
-                                [session_id],
-                            );
+                            let _ = sessions::heartbeat(&conn, *session_id);
                         }
                     } else if is_running && !already_tracking {
                         // Library model: "playing" is derived from the open session, never
-                        // stored. The only status a launch changes is wishlist → library
-                        // ('backlog'): actually running a game means you own it. Manual marks
+                        // stored. The only status a launch changes is wishlist → library:
+                        // actually running a game means you own it. Manual marks
                         // (`completed`/`dropped`) stay put — replaying doesn't un-mark them.
-                        let _ = conn.execute(
-                            "UPDATE games SET status = 'backlog' WHERE id = ?1 AND status = 'wishlist'",
-                            [game_id],
-                        );
+                        let _ = games::promote_wishlist_to_library(&conn, *game_id);
 
-                        let result = conn.query_row(
-                            "INSERT INTO sessions (game_id, started_at, last_seen_at, auto_tracked) VALUES (?1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1) RETURNING id, started_at",
-                            [game_id],
-                            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-                        );
-                        if let Ok((session_id, started_at)) = result {
+                        if let Ok((session_id, started_at)) = sessions::open(&conn, *game_id) {
                             active.insert(*game_id, session_id);
                             let _ = app.emit(
                                 "session-started",
@@ -521,15 +456,7 @@ pub fn start(app: AppHandle) {
                         }
                     } else if !is_running && already_tracking {
                         if let Some(session_id) = active.remove(game_id) {
-                            let duration: Result<i64, _> = conn.query_row(
-                                "UPDATE sessions SET ended_at = CURRENT_TIMESTAMP,
-                                    duration_seconds = CAST((julianday(CURRENT_TIMESTAMP) - julianday(started_at)) * 86400 AS INTEGER)
-                                 WHERE id = ?1
-                                 RETURNING duration_seconds",
-                                [session_id],
-                                |row| row.get(0),
-                            );
-                            if let Ok(duration_seconds) = duration {
+                            if let Ok(Some(duration_seconds)) = sessions::close_on_exit(&conn, session_id) {
                                 let _ = app.emit(
                                     "session-ended",
                                     SessionEnded { game_id: *game_id, session_id, duration_seconds },

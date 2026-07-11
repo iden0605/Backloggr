@@ -57,6 +57,10 @@ interface AppState {
   // Settings nav item shows a dot, and the About card offers the install).
   updateAvailable: string | null;
   setUpdateAvailable: (version: string | null) => void;
+  // The clip hotkey as registered (task 26) — loaded once by Shell, updated by Settings.
+  // Every piece of copy that names the hotkey reads this instead of hardcoding Alt+F9.
+  clipHotkey: string;
+  setClipHotkey: (hotkey: string) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -76,4 +80,6 @@ export const useAppStore = create<AppState>((set) => ({
   setForYouRecs: (recs) => set({ forYouRecs: recs }),
   updateAvailable: null,
   setUpdateAvailable: (version) => set({ updateAvailable: version }),
+  clipHotkey: "Alt+F9",
+  setClipHotkey: (hotkey) => set({ clipHotkey: hotkey }),
 }));
