@@ -303,7 +303,7 @@ function LibraryCard({
   return (
     <button
       onClick={onOpen}
-      className="group relative aspect-[2/3] overflow-hidden rounded-xl border border-border text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-border-strong"
+      className="cv-auto group relative aspect-[2/3] overflow-hidden rounded-xl border border-border text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-border-strong"
     >
       <CoverImage
         src={game.coverUrl}

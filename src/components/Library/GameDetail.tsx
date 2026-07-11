@@ -5,7 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Check, ChevronRight, Film, Play } from "lucide-react";
 import { Clip, ClipPlayer } from "../Clips/Clips";
-import { CoverImage } from "../shared/CoverImage";
+import { CoverImage, resizedCover } from "../shared/CoverImage";
 import { RawgGameDetail } from "../shared/GameCard";
 import { GameStatus, useAppStore } from "../../store/useAppStore";
 import { formatPlaytime, formatRelative, LibraryGame } from "./Library";
@@ -151,8 +151,9 @@ export function GameDetail() {
         <div className="relative">
           <div className="absolute inset-0 overflow-hidden">
             {game.coverUrl ? (
+              // Blurred anyway — the 640px CDN rendition rasterizes far cheaper.
               <img
-                src={game.coverUrl}
+                src={resizedCover(game.coverUrl, 640)}
                 alt=""
                 aria-hidden
                 decoding="async"

@@ -45,6 +45,26 @@ const MAX_CLIP_SECONDS: u32 = 120;
 const CLIP_SECONDS_SETTING_KEY: &str = "clip_seconds";
 const MIC_ENABLED_SETTING_KEY: &str = "mic_enabled";
 
+/// A capture that has stayed alive this long has proven its inputs work — earlier strikes were
+/// transient. Resetting on the first healthy poll instead would let a dies-after-a-few-seconds
+/// capture respawn forever with no backoff (see `respawn_delay_secs`).
+const HEALTHY_CAPTURE_SECS: u64 = 60;
+
+/// Watchdog backoff: seconds to wait before respawning a capture that died, by strike count.
+/// `None` means give up for the rest of the session. Every process spawned on Windows flashes
+/// the system's "working in background" cursor (STARTF_FORCEOFFFEEDBACK can't be set through
+/// std::process::Command) — an uncapped 5s respawn loop meant a machine where capture can't run
+/// had its cursor flickering the whole time the app was open, on top of the wasted spawns.
+fn respawn_delay_secs(strikes: u8) -> Option<u64> {
+    match strikes {
+        0 | 1 => Some(0),
+        2 => Some(10),
+        3 => Some(30),
+        4 => Some(60),
+        _ => None,
+    }
+}
+
 /// Path to the ffmpeg binary: the bundled sidecar next to the app executable when one exists
 /// (installed Windows builds — `bundle.externalBin` in tauri.windows.conf.json puts it there, so
 /// end users never install ffmpeg themselves), falling back to a PATH lookup (dev builds, macOS).
@@ -113,6 +133,9 @@ pub struct PipeAudioSpec {
 
 pub struct Capture {
     child: Child,
+    /// When this ffmpeg was spawned — a capture must survive `HEALTHY_CAPTURE_SECS` before its
+    /// strike count resets.
+    spawned_at: std::time::Instant,
     /// Whether this capture is scoped to the game's own window (`gdigrab title=` on Windows). A
     /// window-scoped capture keeps grabbing the game's contents even while it's unfocused —
     /// Medal/ShadowPlay-like continuous gameplay through alt-tabs — so no focus sampling is
@@ -146,6 +169,12 @@ pub struct CaptureSlot {
     /// with the focus sampler masking non-game content, which produces correct clips regardless.
     /// Reset at every fresh session start.
     window_scope_blocked: bool,
+    /// Earliest instant the watchdog may respawn after a capture death — the backoff window
+    /// (`respawn_delay_secs`). `None` with `phase: None` means "fresh session start".
+    retry_at: Option<std::time::Instant>,
+    /// Set once capture strikes out entirely for this session (`respawn_delay_secs` returned
+    /// `None`) — no further spawn attempts until `stop()` clears it at session end.
+    capture_disabled: bool,
     phase: Option<Capture>,
 }
 
@@ -157,6 +186,8 @@ impl CaptureSlot {
             respawn_strikes: 0,
             restart_requested: false,
             window_scope_blocked: false,
+            retry_at: None,
+            capture_disabled: false,
             phase: None,
         }
     }
@@ -694,7 +725,17 @@ fn capture_input_args(
                 }
             };
 
-            let devices = dshow_audio_devices();
+            // WASAPI loopback is probed in-process (cpal); the dshow listing spawns an ffmpeg,
+            // so it only runs when something will actually read it — the mic pick, or the
+            // loopback-device fallback. When the watchdog has dropped audio entirely
+            // (respawn_strikes), a respawn spawns NOTHING beyond the capture itself: every
+            // process launch on Windows flashes the "working in background" cursor.
+            let wasapi_spec = if with_loopback { crate::loopback::default_output_spec() } else { None };
+            let devices = if with_mic || (with_loopback && wasapi_spec.is_none()) {
+                dshow_audio_devices()
+            } else {
+                Vec::new()
+            };
             let mut audio_maps = Vec::new();
             let mut pipe_audio = None;
             let mut input_idx = 1;
@@ -710,7 +751,7 @@ fn capture_input_args(
                 // device directly (any headphones/speakers, zero setup, the way Medal/ShadowPlay
                 // do it), raw PCM piped into stdin by loopback.rs. A dshow loopback DEVICE is
                 // only the fallback for the rare machine where the WASAPI route can't open.
-                if let Some(spec) = crate::loopback::default_output_spec() {
+                if let Some(spec) = wasapi_spec {
                     let (ar, ac) = (spec.sample_rate.to_string(), spec.channels.to_string());
                     push_input(
                         &mut args,
@@ -1014,13 +1055,28 @@ pub fn ensure_capture(app: &AppHandle, exe_name: Option<&str>) {
     // Read before the match — field reads on `slot` can't interleave with the `child` borrow.
     let scope_blocked = slot.window_scope_blocked;
     let restart_requested = slot.restart_requested;
+    let now = std::time::Instant::now();
     let (respawn, wipe) = match &mut slot.phase {
         None => {
-            slot.respawn_strikes = 0;
-            slot.window_scope_blocked = false;
-            (true, true)
+            // Capture struck out earlier this session — stays off until stop() clears it.
+            if slot.capture_disabled {
+                return;
+            }
+            match slot.retry_at {
+                // Still inside a backoff window after repeated capture deaths.
+                Some(at) if now < at => (false, false),
+                // Backoff elapsed — retry, keeping the strike count (only a capture that
+                // survives HEALTHY_CAPTURE_SECS resets it).
+                Some(_) => (true, false),
+                // Fresh session start.
+                None => {
+                    slot.respawn_strikes = 0;
+                    slot.window_scope_blocked = false;
+                    (true, true)
+                }
+            }
         }
-        Some(Capture { child, window_scoped }) => match child.try_wait() {
+        Some(Capture { child, window_scoped, spawned_at }) => match child.try_wait() {
             Ok(None) => {
                 if !*window_scoped && !scope_blocked && window_now_resolvable(exe_name) {
                     let _ = child.kill();
@@ -1029,8 +1085,10 @@ pub fn ensure_capture(app: &AppHandle, exe_name: Option<&str>) {
                     let _ = child.wait();
                     (true, true)
                 } else {
-                    // Healthy run — a past strike was transient, not the audio input.
-                    slot.respawn_strikes = 0;
+                    // Healthy long enough — past strikes were transient, not the inputs.
+                    if spawned_at.elapsed().as_secs() >= HEALTHY_CAPTURE_SECS {
+                        slot.respawn_strikes = 0;
+                    }
                     (false, false)
                 }
             }
@@ -1079,6 +1137,33 @@ pub fn ensure_capture(app: &AppHandle, exe_name: Option<&str>) {
                 if tail.is_empty() { "no ffmpeg stderr" } else { &tail }
             ),
         );
+
+        // Backoff, or give up entirely for this session. First strike respawns immediately
+        // (transient hiccup); repeats wait increasingly long, and past the schedule capture
+        // shuts off until the session ends. Bump the generation so a live focus sampler
+        // (macOS spawns lsappinfo every second) exits instead of sampling a dead capture.
+        match respawn_delay_secs(slot.respawn_strikes) {
+            Some(0) => {}
+            Some(delay) => {
+                slot.phase = None;
+                slot.generation += 1;
+                slot.retry_at = Some(now + std::time::Duration::from_secs(delay));
+                log_diagnostic(app, &format!("capture backoff: next respawn attempt in {delay}s"));
+                trim_buffer(&dir);
+                return;
+            }
+            None => {
+                slot.phase = None;
+                slot.generation += 1;
+                slot.capture_disabled = true;
+                log_diagnostic(
+                    app,
+                    "capture keeps dying — giving up until the current game session ends",
+                );
+                trim_buffer(&dir);
+                return;
+            }
+        }
     }
 
     if respawn {
@@ -1117,12 +1202,31 @@ pub fn ensure_capture(app: &AppHandle, exe_name: Option<&str>) {
         match spawn_ffmpeg(&dir, &inputs) {
             Some(child) => {
                 slot.generation += 1;
-                slot.phase = Some(Capture { child, window_scoped });
+                slot.retry_at = None;
+                slot.restart_requested = false;
+                slot.phase = Some(Capture { child, spawned_at: now, window_scoped });
                 if !window_scoped {
                     spawn_focus_sampler(app, slot.generation);
                 }
             }
-            None => slot.phase = None,
+            None => {
+                // Spawn failure gets the same strike/backoff treatment as a death — a machine
+                // where ffmpeg can't start must not retry a fresh spawn every poll forever.
+                slot.phase = None;
+                slot.respawn_strikes = slot.respawn_strikes.saturating_add(1);
+                match respawn_delay_secs(slot.respawn_strikes) {
+                    Some(delay) => {
+                        slot.retry_at = Some(now + std::time::Duration::from_secs(delay));
+                    }
+                    None => {
+                        slot.capture_disabled = true;
+                        log_diagnostic(
+                            app,
+                            "capture ffmpeg won't spawn — giving up until the current game session ends",
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -1141,12 +1245,18 @@ pub fn stop(app: &AppHandle) {
         Ok(g) => g,
         Err(e) => e.into_inner(),
     };
+    // Session-scoped state resets even when no capture is live — the watchdog's give-up path
+    // (`capture_disabled`) and backoff window leave `phase: None` and must not leak into the
+    // next session.
+    slot.exe_name = None;
+    slot.window_scope_blocked = false;
+    slot.respawn_strikes = 0;
+    slot.retry_at = None;
+    slot.capture_disabled = false;
     let Some(mut capture) = slot.phase.take() else {
         return;
     };
     slot.generation += 1;
-    slot.exe_name = None;
-    slot.window_scope_blocked = false;
     drop(slot);
 
     let _ = capture.child.kill();

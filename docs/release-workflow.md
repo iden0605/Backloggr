@@ -94,6 +94,19 @@ Mechanics:
 - The first updater-capable release is the one that ships this config; older installs
   (≤ v0.3.0) have no updater and must download the new installer from the website once.
 
+## MSI identity (product rename)
+
+The product was renamed "Game Backlog" → "Backloggr" after v0.5.0. MSI in-place upgrades key
+off WiX's UpgradeCode, which tauri-bundler derives from the product name when not set —
+renaming would have changed it and made every existing install a side-by-side duplicate
+instead of an upgrade. `bundle.windows.wix.upgradeCode` in tauri.conf.json is therefore
+pinned to `29896101-9238-5686-9555-0cbe87e84bf4` — the GUID tauri derived from the OLD name
+(`uuid5(NAMESPACE_DNS, "Game Backlog.exe.app.x64")`), which every shipped MSI (≤ v0.5.0)
+carries. **Never change this value**; it is the app's permanent MSI identity regardless of
+future renames. NSIS-over-NSIS upgrades across the rename can leave a stale "Game Backlog"
+entry in installed programs (NSIS keys on the product name) — the MSI is the primary path and
+unaffected. lib.rs also migrates the old autostart Run entry on first launch after the rename.
+
 ## Caveats
 
 - `release.yml` has not yet had a real tag run — the first `v*` push is the shakeout. Since releases are drafts, a broken run publishes nothing.

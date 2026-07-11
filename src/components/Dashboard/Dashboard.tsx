@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Link } from "react-router-dom";
 import { Clapperboard, Sparkles, Timer } from "lucide-react";
-import { CoverImage } from "../shared/CoverImage";
+import { CoverImage, resizedCover } from "../shared/CoverImage";
 import { Game, useAppStore } from "../../store/useAppStore";
 
 type Period = "day" | "week" | "month" | "all";
@@ -122,8 +122,11 @@ function Hero({
     <section className="relative">
       <div className="absolute inset-0 overflow-hidden">
         {coverUrl ? (
+          // The backdrop is heavily blurred anyway — a 640px CDN rendition rasterizes far
+          // cheaper than the full-size cover (blur cost scales with source pixels, and this
+          // was the most expensive paint on the page during Windows scroll testing).
           <img
-            src={coverUrl}
+            src={resizedCover(coverUrl, 640)}
             alt=""
             aria-hidden
             decoding="async"

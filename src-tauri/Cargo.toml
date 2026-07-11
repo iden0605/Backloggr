@@ -63,6 +63,9 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Threading",
 ] }
+# Settings → Uninstall (locating the MSI/NSIS uninstall entry) and the one-time autostart
+# migration after the "Game Backlog" → "Backloggr" product rename.
+windows-registry = "0.6"
 # WASAPI loopback capture of the default output device (loopback.rs) — zero-setup game/system
 # audio in clips, no virtual loopback device needed.
 cpal = "0.15"

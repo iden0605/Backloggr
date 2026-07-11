@@ -98,6 +98,14 @@
     color: theme("colors.text-lo");
   }
 
+  /* Offscreen grid cards skip layout/paint entirely (big scroll win for large libraries on
+     WebView2). The intrinsic size is only used while a card is offscreen — the real box still
+     comes from the grid + aspect-ratio once it scrolls into view. */
+  .cv-auto {
+    content-visibility: auto;
+    contain-intrinsic-size: 170px 255px;
+  }
+
   /* Keyboard-shortcut chip (Alt+F9 etc.) — used anywhere a hotkey appears in copy. */
   .kbd {
     font-family: theme("fontFamily.mono");

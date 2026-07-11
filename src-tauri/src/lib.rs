@@ -89,6 +89,10 @@ pub fn run() {
             if let Err(e) = tray::init(app.handle()) {
                 eprintln!("tray: failed to create tray icon: {e}");
             }
+            // Heal the launch-on-startup entry that the "Game Backlog" → "Backloggr" rename
+            // orphaned (old name, old exe path). No-op unless the stale entry exists.
+            #[cfg(target_os = "windows")]
+            commands::migrate_renamed_autostart(app.handle());
             // Autostart launches pass --hidden (see the autostart plugin registration): start in
             // the tray, tracking in the background, without flashing a window at login.
             if std::env::args().any(|arg| arg == "--hidden") {
@@ -137,6 +141,7 @@ pub fn run() {
             clipper::set_mic_enabled,
             commands::get_autostart_enabled,
             commands::set_autostart_enabled,
+            commands::uninstall_app,
             commands::get_clip_hotkey,
             commands::set_clip_hotkey,
             commands::fetch_steam_library,

@@ -44,6 +44,9 @@ function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
   );
 }
 
+// The uninstall flow drives the OS's own uninstaller — only meaningful on Windows installs.
+const IS_WINDOWS = navigator.userAgent.includes("Windows");
+
 export function Settings() {
   const clipHotkey = useAppStore((s) => s.clipHotkey);
   const setClipHotkey = useAppStore((s) => s.setClipHotkey);
@@ -53,6 +56,8 @@ export function Settings() {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState<string | null>(null);
+  const [confirmUninstall, setConfirmUninstall] = useState(false);
+  const [uninstalling, setUninstalling] = useState(false);
 
   useEffect(() => {
     getVersion().then(setVersion).catch(() => {});
@@ -100,6 +105,19 @@ export function Settings() {
     } catch (err) {
       setError(String(err));
       setMicEnabled(!next);
+    }
+  }
+
+  async function runUninstall() {
+    setUninstalling(true);
+    try {
+      // Hands off to the Windows uninstaller and quits the app — no state to restore on
+      // success, the window is about to disappear.
+      await invoke("uninstall_app");
+    } catch (err) {
+      setError(String(err));
+      setUninstalling(false);
+      setConfirmUninstall(false);
     }
   }
 
@@ -202,6 +220,52 @@ export function Settings() {
           )}
         </div>
         <UpdateSection />
+
+        {IS_WINDOWS && (
+          <div className="mt-4 border-t border-border pt-4">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-[13.5px] font-medium text-text-hi">Uninstall Backloggr</p>
+                <p className="mt-0.5 text-xs text-text-lo">
+                  Removes the app from this PC. Your library, playtime, settings, and clips
+                  stay on disk — a reinstall picks them right back up.
+                </p>
+              </div>
+              {!confirmUninstall && (
+                <button
+                  onClick={() => setConfirmUninstall(true)}
+                  className="shrink-0 rounded-lg border border-danger/40 px-3.5 py-2 text-xs font-semibold text-danger transition-all duration-150 hover:border-danger hover:bg-danger/10 active:scale-[0.98]"
+                >
+                  Uninstall…
+                </button>
+              )}
+            </div>
+            {confirmUninstall && (
+              <div className="mt-3 flex animate-fade-up items-center justify-between gap-4 rounded-lg border border-danger/25 bg-danger/10 px-4 py-3">
+                <p className="text-xs text-text-hi">
+                  Remove Backloggr from this PC? The app will close and the Windows uninstaller
+                  will take over.
+                </p>
+                <div className="flex shrink-0 gap-2">
+                  <button
+                    onClick={() => setConfirmUninstall(false)}
+                    disabled={uninstalling}
+                    className="rounded-lg px-3 py-1.5 text-xs font-medium text-text-lo transition-all duration-150 enabled:hover:text-text-hi enabled:active:scale-[0.98]"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={runUninstall}
+                    disabled={uninstalling}
+                    className="rounded-lg bg-danger px-3.5 py-1.5 text-xs font-semibold text-bg transition-all duration-150 enabled:hover:opacity-85 enabled:active:scale-[0.98] disabled:opacity-60"
+                  >
+                    {uninstalling ? "Uninstalling…" : "Uninstall"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
