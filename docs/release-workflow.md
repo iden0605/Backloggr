@@ -94,6 +94,29 @@ Mechanics:
 - The first updater-capable release is the one that ships this config; older installs
   (≤ v0.3.0) have no updater and must download the new installer from the website once.
 
+## The Web Setup Bootstrapper (BackloggrSetup.exe)
+
+The website's primary download is a **branded install wizard**, not the raw MSI: `installer/`
+is a standalone cargo crate (egui — deliberately not Tauri, since the target machine may not
+have WebView2 yet) that renders the app's Iron & Chalk UI, fetches
+`releases/latest/download/latest.json` (the same stable URL the in-app updater uses), downloads
+the current MSI with a progress bar, runs it silently (`msiexec /i … /qn /norestart`, exit
+codes 0/1641/3010 = success), and offers a Launch button.
+
+- **Evergreen**: the exe embeds no version — one download URL
+  (`releases/latest/download/BackloggrSetup.exe`) always installs the newest published release.
+  `release.yml` still rebuilds and attaches it to every release (stable asset name, `--clobber`).
+- **Elevation**: the exe carries a `requireAdministrator` manifest (build.rs via tauri-winres) —
+  one UAC prompt at launch, because the MSI installs per-machine. Launch-after-install goes
+  through `explorer.exe` to de-elevate back to the desktop user.
+- **Dev on macOS**: the crate builds and runs on the dev platform; only the msiexec step is
+  simulated (`cargo run` in `installer/`, `BACKLOGGR_SETUP_AUTORUN=1` drives the flow in debug
+  builds). The Windows-only paths are compile-checked by `windows-check.yml`.
+- Fonts (Archivo, JetBrains Mono — OFL) and the logo are embedded as assets; the palette is
+  hand-copied from `tailwind.config.js` — keep them in sync if the design system moves.
+- The MSI remains the release's canonical artifact: the in-app updater and any direct/manual
+  download still use it. The bootstrapper is only the website's front door.
+
 ## MSI identity (product rename)
 
 The product was renamed "Game Backlog" → "Backloggr" after v0.5.0. MSI in-place upgrades key

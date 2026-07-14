@@ -1,0 +1,23 @@
+[package]
+name = "backloggr-setup"
+version = "0.1.0"
+description = "Backloggr web setup — downloads and installs the latest release"
+edition = "2021"
+license = "GPL-3.0"
+
+[dependencies]
+eframe = "0.31"
+ureq = { version = "2", features = ["json"] }
+serde_json = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[build-dependencies]
+tauri-winres = "0.1"
+
+# The bootstrapper is a single small download from the website; squeeze the binary.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

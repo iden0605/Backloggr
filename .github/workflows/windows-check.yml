@@ -19,7 +19,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            installer
 
       # tauri::generate_context! requires the frontendDist directory ("../dist") to exist at
       # compile time; an empty placeholder is enough for `cargo check` (no real frontend build
@@ -35,3 +37,8 @@ jobs:
 
       - name: cargo check (Windows target)
         run: cargo check --manifest-path src-tauri/Cargo.toml
+
+      # The setup bootstrapper (installer/) has Windows-only code too (the msiexec runner,
+      # winres manifest/icon in build.rs) that macOS development never compiles.
+      - name: cargo check setup bootstrapper (Windows target)
+        run: cargo check --manifest-path installer/Cargo.toml

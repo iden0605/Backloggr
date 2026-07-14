@@ -26,5 +26,8 @@ dist-ssr
 # ffmpeg sidecar binaries staged by CI (release.yml) — never committed
 src-tauri/binaries/
 
+# setup bootstrapper build output (installer/ is its own cargo crate)
+installer/target/
+
 # Local-dev compile-time secrets (STEAM_API_KEY) — CI injects these from GitHub repo secrets
 src-tauri/.cargo/config.toml

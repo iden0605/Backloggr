@@ -34,7 +34,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            installer
 
       # Stage the ffmpeg sidecar under the target-triple filename tauri's externalBin expects.
       # Pinned to a versioned gyan.dev package — those URLs are permanent, unlike BtbN's
@@ -79,3 +81,19 @@ jobs:
           # website's download button also prefers .msi, and updating an MSI install with
           # the NSIS installer leaves two "installed programs" entries.
           updaterJsonPreferNsis: false
+
+      # The branded web-setup bootstrapper (installer/ crate): a small egui exe the website
+      # serves instead of the raw MSI. It's evergreen — it fetches latest.json at runtime and
+      # installs whatever the newest published release is — so the asset name is stable
+      # (BackloggrSetup.exe) and releases/latest/download/BackloggrSetup.exe always works.
+      - name: Build setup bootstrapper (Windows)
+        if: matrix.platform == 'windows-latest'
+        run: cargo build --release --manifest-path installer/Cargo.toml
+
+      - name: Attach bootstrapper to release (Windows)
+        if: matrix.platform == 'windows-latest'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          Copy-Item installer/target/release/backloggr-setup.exe BackloggrSetup.exe
+          gh release upload ${{ github.ref_name }} BackloggrSetup.exe --clobber
