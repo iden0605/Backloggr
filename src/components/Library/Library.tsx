@@ -210,6 +210,8 @@ export function Library() {
         </div>
       ) : (
         <>
+          {/* Two toolbar rows: controls up top, filter chips on their own line — one wrapping
+              row got cluttered at narrow window widths (900px minimum). */}
           <div className="mt-6 flex flex-wrap items-center gap-2.5">
             <div className="flex rounded-[10px] border border-border bg-surface p-[3px]">
               {(["library", "wishlist"] as const).map((t) => (
@@ -225,7 +227,7 @@ export function Library() {
               ))}
             </div>
 
-            <div className="flex min-w-[210px] items-center gap-2 rounded-[10px] border border-border bg-surface px-3 py-2">
+            <div className="flex min-w-[210px] flex-1 items-center gap-2 rounded-[10px] border border-border bg-surface px-3 py-2 sm:max-w-xs">
               <SearchIcon className="h-3.5 w-3.5 shrink-0 text-text-lo/60" />
               <input
                 value={query}
@@ -235,12 +237,19 @@ export function Library() {
               />
             </div>
 
-            {tab === "library" &&
-              FILTERS.map(({ value, label, live }) => (
+            <div className="ml-auto">
+              <Select value={sort} options={SORTS} onChange={setSort} prefix="Sort:" />
+            </div>
+          </div>
+
+          {tab === "library" && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {FILTERS.map(({ value, label, live }, i) => (
                 <button
                   key={value}
                   onClick={() => setFilter(value)}
-                  className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-all duration-150 active:scale-[0.97] ${
+                  style={{ animationDelay: `${i * 40}ms` }}
+                  className={`animate-fade-up rounded-full border px-3 py-1.5 text-xs font-medium transition-all duration-150 active:scale-[0.97] ${
                     filter === value
                       ? "border-text-hi bg-text-hi font-semibold text-bg"
                       : "border-border-strong text-text-lo hover:border-text-hi hover:text-text-hi"
@@ -253,10 +262,13 @@ export function Library() {
                 </button>
               ))}
 
-            <div className="ml-auto">
-              <Select value={sort} options={SORTS} onChange={setSort} prefix="Sort:" />
+              {/* The collection at a glance — quiet mono stat line, same treatment as shelf labels. */}
+              <p className="ml-auto select-none font-mono text-[10.5px] uppercase tracking-[0.12em] text-text-lo/80">
+                {owned.length} {owned.length === 1 ? "game" : "games"} · {counts.played} played
+                {counts.completed > 0 && ` · ${counts.completed} completed`}
+              </p>
             </div>
-          </div>
+          )}
 
           {visible.length === 0 ? (
             <p className="mt-10 text-center text-[13px] text-text-lo">
@@ -266,13 +278,20 @@ export function Library() {
             </p>
           ) : (
             <div className="mt-6 grid grid-cols-[repeat(auto-fill,minmax(138px,1fr))] gap-4">
-              {visible.map((game) => (
-                <LibraryCard
+              {visible.map((game, i) => (
+                // Capped stagger — only the first dozen cards delay, so a big library's
+                // grid never feels like it's waiting on its own entrance.
+                <div
                   key={game.id}
-                  game={game}
-                  live={game.id === playingId}
-                  onOpen={() => navigate(`/library/${game.id}`)}
-                />
+                  className="animate-fade-up"
+                  style={{ animationDelay: `${Math.min(i, 12) * 20}ms` }}
+                >
+                  <LibraryCard
+                    game={game}
+                    live={game.id === playingId}
+                    onOpen={() => navigate(`/library/${game.id}`)}
+                  />
+                </div>
               ))}
             </div>
           )}
@@ -303,7 +322,7 @@ function LibraryCard({
   return (
     <button
       onClick={onOpen}
-      className="cv-auto group relative aspect-[2/3] overflow-hidden rounded-xl border border-border text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-border-strong"
+      className="cv-auto group relative block aspect-[2/3] w-full overflow-hidden rounded-xl border border-border text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-border-strong"
     >
       <CoverImage
         src={game.coverUrl}

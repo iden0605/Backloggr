@@ -7,6 +7,7 @@ import { ArrowLeft, Check, ChevronRight, Film, Play } from "lucide-react";
 import { Clip, ClipPlayer } from "../Clips/Clips";
 import { CoverImage, resizedCover } from "../shared/CoverImage";
 import { RawgGameDetail } from "../shared/GameCard";
+import { maybeUnlock } from "../shared/unlocks";
 import { GameStatus, useAppStore } from "../../store/useAppStore";
 import { formatPlaytime, formatRelative, LibraryGame } from "./Library";
 
@@ -84,6 +85,13 @@ export function GameDetail() {
     try {
       await invoke("update_game_status", { id: gameId, status });
       await load();
+      if (status === "completed") {
+        // First game ever marked completed — one quiet lifetime banner (Shell renders it).
+        void maybeUnlock("first-completed", async () => {
+          const library = await invoke<LibraryGame[]>("get_library");
+          return library.filter((g) => g.status === "completed").length === 1;
+        });
+      }
     } catch (err) {
       setError(String(err));
     }
@@ -143,7 +151,32 @@ export function GameDetail() {
 
   return (
     <div>
-      <BackLink />
+      {/* Sticky wayfinding row: back link + in-page section jumps. Sticks to the top of the
+          scroll container (just under the floating TopNav) so orientation survives the long
+          scroll; near-opaque bg per the no-backdrop-blur-over-scroll rule. */}
+      <div className="sticky top-0 z-30 -mx-2 flex items-center justify-between gap-4 rounded-b-xl bg-bg/95 px-2 py-2">
+        <BackLink />
+        <nav className="flex gap-1">
+          {[
+            { id: "stats", label: "Stats" },
+            { id: "clips", label: "Clips" },
+            ...(game.rawgId ? [{ id: "about", label: "About" }] : []),
+          ].map(({ id, label }) => (
+            <button
+              key={id}
+              onClick={() => {
+                const el = document.getElementById(`section-${id}`);
+                // Jumping to About expands it — scrolling to a collapsed row helps nobody.
+                if (el instanceof HTMLDetailsElement) el.open = true;
+                el?.scrollIntoView({ behavior: "smooth" });
+              }}
+              className="rounded-md px-2.5 py-1 font-mono text-[10.5px] uppercase tracking-[0.1em] text-text-lo transition-all duration-150 hover:bg-surface hover:text-text-hi active:scale-[0.97]"
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+      </div>
       {error && <p className="mt-3 text-sm text-danger">{error}</p>}
 
       <div className="mt-4 overflow-hidden rounded-2xl border border-border bg-surface">
@@ -219,7 +252,7 @@ export function GameDetail() {
         </div>
 
         <div className="px-7 pb-7 pt-6">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div id="section-stats" className="grid scroll-mt-16 grid-cols-2 gap-3 sm:grid-cols-4">
             <StatTile label="Total playtime" value={stats ? formatPlaytime(stats.totalSeconds) : "—"} />
             <StatTile
               label="Last played"
@@ -256,7 +289,7 @@ export function GameDetail() {
             </div>
           )}
 
-          <div className="mt-7">
+          <div id="section-clips" className="mt-7 scroll-mt-16">
             <h2 className="shelf-label">
               Clips {clips.length > 0 && <span className="text-text-lo/50">· {clips.length}</span>}
             </h2>
@@ -303,7 +336,11 @@ export function GameDetail() {
           </div>
 
           {game.rawgId && (
-            <details className="group mt-7 border-t border-border pt-5" onToggle={loadDetail}>
+            <details
+              id="section-about"
+              className="group mt-7 scroll-mt-16 border-t border-border pt-5"
+              onToggle={loadDetail}
+            >
               <summary className="flex cursor-pointer list-none items-center gap-2 text-[12.5px] font-semibold text-text-lo transition-colors hover:text-text-hi group-open:text-text-hi [&::-webkit-details-marker]:hidden">
                 <ChevronRight className="h-3.5 w-3.5 transition-transform group-open:rotate-90" />
                 About this game

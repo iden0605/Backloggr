@@ -45,6 +45,8 @@ interface CurrentlyPlaying {
   startedAt: string;
   /** Other games that also have an open session — the hero shows the most recent + this count. */
   alsoPlaying: number;
+  /** Longest completed session for this game (0 when none) — the milestone chip's baseline. */
+  bestSessionSeconds: number;
 }
 
 interface LibraryGame extends Game {
@@ -80,7 +82,22 @@ function dayLabel(date: string, style: "short" | "narrow"): string {
   return d.toLocaleDateString(undefined, { weekday: style });
 }
 
-function SessionTimer({ startedAt }: { startedAt: string }) {
+/**
+ * The live timer's quiet milestone acknowledgment: "Longest session yet" once the personal
+ * best is crossed (only when a real best exists to beat), otherwise the last round hour /
+ * half-hour mark passed. Null below 30 minutes — most sessions shouldn't earn a chip.
+ */
+function milestoneFor(elapsedSeconds: number, bestSessionSeconds: number): string | null {
+  if (bestSessionSeconds >= 1800 && elapsedSeconds > bestSessionSeconds) {
+    return "Longest session yet";
+  }
+  const hours = Math.floor(elapsedSeconds / 3600);
+  if (hours >= 1) return `${hours}h milestone`;
+  if (elapsedSeconds >= 1800) return "30m milestone";
+  return null;
+}
+
+function SessionTimer({ startedAt, bestSessionSeconds }: { startedAt: string; bestSessionSeconds: number }) {
   const [elapsedSeconds, setElapsedSeconds] = useState(() =>
     Math.max(0, (Date.now() - parseUtc(startedAt).getTime()) / 1000),
   );
@@ -93,10 +110,24 @@ function SessionTimer({ startedAt }: { startedAt: string }) {
     return () => clearInterval(interval);
   }, [startedAt]);
 
+  const milestone = milestoneFor(elapsedSeconds, bestSessionSeconds);
+
   return (
-    <span className="font-mono text-xl tabular-nums text-accent">
-      {formatElapsed(elapsedSeconds)}
-    </span>
+    <>
+      <span className="font-mono text-xl tabular-nums text-accent">
+        {formatElapsed(elapsedSeconds)}
+      </span>
+      <span>this session</span>
+      {milestone && (
+        // Keyed so a milestone change (30m → 1h → longest yet) replays the entrance pop.
+        <span
+          key={milestone}
+          className="animate-pop-in rounded-md border border-accent/30 bg-accent/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.1em] text-accent"
+        >
+          {milestone}
+        </span>
+      )}
+    </>
   );
 }
 
@@ -120,7 +151,9 @@ function Hero({
 }) {
   return (
     <section className="relative">
-      <div className="absolute inset-0 overflow-hidden">
+      {/* The mask dissolves the art itself toward the bottom, so the hero melts into the
+          shell's ambient wash instead of flattening it under a solid #151414 gradient. */}
+      <div className="absolute inset-0 overflow-hidden [mask-image:linear-gradient(to_bottom,black_35%,transparent_100%)]">
         {coverUrl ? (
           // The backdrop is heavily blurred anyway — a 640px CDN rendition rasterizes far
           // cheaper than the full-size cover (blur cost scales with source pixels, and this
@@ -132,11 +165,12 @@ function Hero({
             decoding="async"
             className="h-full w-full scale-110 object-cover blur-2xl brightness-[0.45] saturate-[0.85]"
           />
-        ) : (
-          <div className="h-full w-full bg-gradient-to-br from-surface-alt to-bg" />
+        ) : null}
+        {/* Readability darkening only (and only over real art — without a cover the
+            shell's ambient wash IS the backdrop, and darkening it buries it). */}
+        {coverUrl && (
+          <div className="absolute inset-0 bg-gradient-to-b from-bg/45 via-bg/35 to-transparent" />
         )}
-        {/* Melt the art into the page background so the hero has no hard bottom edge. */}
-        <div className="absolute inset-0 bg-gradient-to-b from-bg/40 via-bg/50 to-bg" />
       </div>
 
       <div className="relative mx-auto flex min-h-[320px] w-full max-w-5xl items-end gap-7 px-8 pb-10 pt-28">
@@ -198,11 +232,28 @@ function WeekSparkline({ days }: { days: DailyPlaytime[] }) {
   );
 }
 
+/**
+ * Consecutive play days counted back from today (a play-less today doesn't break the streak
+ * yet — it just isn't "live"). Only 7 days of data exist, so 7 renders as "7+".
+ */
+function streakOf(days: DailyPlaytime[]): { count: number; live: boolean } {
+  let i = days.length - 1;
+  const live = (days[i]?.totalSeconds ?? 0) > 0;
+  if (!live) i--;
+  let count = 0;
+  while (i >= 0 && days[i].totalSeconds > 0) {
+    count++;
+    i--;
+  }
+  return { count, live };
+}
+
 /** "This week" card: one hero number, a vs-last-week delta, and the sparkline. */
 function WeekCard({ stats }: { stats: DashboardStats }) {
   const weekTotal = stats.playtimeLast7Days.reduce((sum, d) => sum + d.totalSeconds, 0);
   const delta = weekTotal - stats.prevWeekPlaytimeSeconds;
   const gamesCount = stats.weekGames.length;
+  const streak = streakOf(stats.playtimeLast7Days);
 
   let deltaLine: React.ReactNode;
   if (weekTotal === 0 && stats.prevWeekPlaytimeSeconds === 0) {
@@ -230,7 +281,19 @@ function WeekCard({ stats }: { stats: DashboardStats }) {
 
   return (
     <div className="rounded-2xl border border-border bg-surface px-6 py-5">
-      <h2 className="shelf-label">This week</h2>
+      <div className="flex items-baseline justify-between">
+        <h2 className="shelf-label">This week</h2>
+        {streak.count >= 2 && (
+          // Rust only while the streak is live (played today) — otherwise it's history, not a marker.
+          <span
+            className={`select-none font-mono text-[10.5px] uppercase tracking-[0.12em] ${
+              streak.live ? "text-accent" : "text-text-lo"
+            }`}
+          >
+            {streak.count >= 7 ? "7+" : streak.count}-day streak
+          </span>
+        )}
+      </div>
       <p className="mt-3 font-mono text-[34px] font-semibold tabular-nums tracking-tight text-text-hi">
         {formatDuration(weekTotal)}
       </p>
@@ -429,6 +492,8 @@ export function Dashboard() {
       .sort((a, b) => parseUtc(b.lastPlayedAt!).getTime() - parseUtc(a.lastPlayedAt!).getTime())[0] ??
     null;
 
+  const ownedCount = libraryGames.filter((g) => g.status !== "wishlist").length;
+
   const lifetimeLine = (gameId: number) => {
     const total = libraryGames.find((g) => g.id === gameId)?.totalSeconds;
     return total && total > 0 ? `${formatDuration(total)} lifetime` : null;
@@ -453,8 +518,10 @@ export function Dashboard() {
           coverUrl={currentlyPlaying.coverUrl}
         >
           <p className="mt-3 flex items-baseline gap-4 text-[13px] text-text-lo">
-            <SessionTimer startedAt={currentlyPlaying.startedAt} />
-            <span>this session</span>
+            <SessionTimer
+              startedAt={currentlyPlaying.startedAt}
+              bestSessionSeconds={currentlyPlaying.bestSessionSeconds}
+            />
             {lifetimeLine(currentlyPlaying.gameId) && (
               <span>· {lifetimeLine(currentlyPlaying.gameId)}</span>
             )}
@@ -473,7 +540,15 @@ export function Dashboard() {
           </p>
         </Hero>
       ) : (
-        <Hero label="Dashboard" title="Your library" coverUrl={null} />
+        // Library exists but nothing has been played yet — an inviting idle state, not a
+        // game pick (the hero features activity, never suggestions).
+        <Hero label="Ready when you are" title="Nothing tracked yet" coverUrl={null}>
+          <p className="mt-3 text-[13px] text-text-lo">
+            {ownedCount > 0
+              ? `${ownedCount} games in your library — launch one and your playtime starts logging itself.`
+              : "Launch any game you own and it'll show up here automatically."}
+          </p>
+        </Hero>
       )}
 
       <div className="mx-auto w-full max-w-5xl px-8 pb-14">
@@ -490,7 +565,7 @@ export function Dashboard() {
                 <button
                   key={p.value}
                   onClick={() => setPeriod(p.value)}
-                  className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                  className={`rounded-md px-3 py-1 text-xs font-medium transition-all duration-150 active:scale-[0.97] ${
                     period === p.value
                       ? "bg-text-hi text-bg"
                       : "text-text-lo hover:text-text-hi"
@@ -510,8 +585,16 @@ export function Dashboard() {
             </div>
           ) : (
             <div className="mt-5 flex gap-5 overflow-x-auto pb-3">
-              {stats.gamesPlayed.map((g) => (
-                <GameShelfCard key={g.gameId} game={g} />
+              {stats.gamesPlayed.map((g, i) => (
+                // Capped stagger: only the first ~8 visible cards get an entrance delay, so
+                // a long shelf never feels like it's waiting on its own animation.
+                <div
+                  key={g.gameId}
+                  className="shrink-0 animate-fade-up"
+                  style={{ animationDelay: `${Math.min(i, 8) * 25}ms` }}
+                >
+                  <GameShelfCard game={g} />
+                </div>
               ))}
             </div>
           )}

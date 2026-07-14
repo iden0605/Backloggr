@@ -13,6 +13,7 @@ import {
   PanelLeftOpen,
 } from "lucide-react";
 import { GameCard } from "../shared/GameCard";
+import { DotBounce } from "../shared/DotBounce";
 import { useAppStore, type ChatTurn, type RecommendedGame } from "../../store/useAppStore";
 import { formatRelative, type LibraryGame } from "../Library/Library";
 import { AddToLibraryButton, useAddToLibrary, type ChatRecommendResponse } from "./common";
@@ -52,11 +53,7 @@ function ThinkingBubble() {
       <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent/10 text-accent">
         <Sparkles className="h-3 w-3" />
       </div>
-      <span className="flex items-center gap-1">
-        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-lo/60 [animation-delay:-0.3s]" />
-        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-lo/60 [animation-delay:-0.15s]" />
-        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-text-lo/60" />
-      </span>
+      <DotBounce className="bg-text-lo/60" />
     </div>
   );
 }
@@ -638,9 +635,18 @@ export function DiscoverChat() {
                             {turn.results.games.map((game, gameIdx) => (
                               <div
                                 key={game.rawgId}
-                                className={fadeUp || undefined}
+                                className={`relative ${fadeUp}`}
                                 style={live ? { animationDelay: `${100 + gameIdx * 55}ms` } : undefined}
                               >
+                                {/* One-shot rust ring: "Shelby found this for you" — only on
+                                    live-arriving recommendation batches, never restored history.
+                                    (The chat page is the palette's sanctioned rust zone.) */}
+                                {live && (
+                                  <span
+                                    className="pointer-events-none absolute inset-0 z-10 animate-glow-fade rounded-xl ring-2 ring-accent/50"
+                                    style={{ animationDelay: `${400 + gameIdx * 55}ms` }}
+                                  />
+                                )}
                                 <GameCard
                                   game={game}
                                   note={game.reason}

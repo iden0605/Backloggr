@@ -1,6 +1,5 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
-import { Loader2 } from "lucide-react";
 
 /**
  * RAWG's media CDN serves downsized renditions through a `/resize/{width}/-/` path segment.
@@ -52,14 +51,19 @@ export function CoverImage({
   const showArt = Boolean(src) && !failed;
   const resolved = src ? (useOriginal ? src : resizedCover(src, resizeWidth)) : null;
 
+  // The default `relative` must yield when the caller positions the container itself
+  // (e.g. LibraryCard's `absolute inset-0`) — position utilities conflict by stylesheet
+  // order, not class order, and `relative` wins that fight, collapsing the fill.
+  const position = /\b(absolute|fixed|sticky)\b/.test(className) ? "" : "relative";
+
   return (
     <div
-      className={`relative overflow-hidden bg-gradient-to-br from-surface-alt to-surface ${className}`}
+      className={`${position} overflow-hidden bg-gradient-to-br from-surface-alt to-surface ${className}`}
     >
       {showArt && !loaded && (
-        <div className="absolute inset-0 flex items-center justify-center">
-          <Loader2 className="h-5 w-5 animate-spin text-accent/70" />
-        </div>
+        // Branded loading state: the surface gradient breathes (same pulse-soft language as
+        // the live dots) instead of a generic spinner icon. Opacity-only — WebView2-cheap.
+        <div className="absolute inset-0 animate-pulse-soft bg-gradient-to-br from-surface-alt to-surface" />
       )}
       {showArt && (
         <img

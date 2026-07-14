@@ -31,7 +31,7 @@ function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
       onClick={onClick}
       role="switch"
       aria-checked={on}
-      className={`relative h-6 w-11 shrink-0 rounded-full transition-colors duration-200 ${
+      className={`relative h-6 w-11 shrink-0 rounded-full transition-all duration-200 active:scale-95 ${
         on ? "bg-text-hi" : "bg-surface-alt ring-1 ring-inset ring-border-strong"
       }`}
     >

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode, MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -72,11 +72,31 @@ interface GameCardProps {
  *  into a detail panel that lazily fetches richer RAWG metadata via `get_game_details`. */
 export function GameCard({ game, note, footer }: GameCardProps) {
   const [expanded, setExpanded] = useState(false);
+  // Same closing pattern as Select: keep the modal mounted while a reverse fade plays, so
+  // dismiss reads as the entrance in reverse instead of an instant vanish.
+  const [closing, setClosing] = useState(false);
   const [detail, setDetail] = useState<RawgGameDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  function requestClose() {
+    if (expanded && !closing) setClosing(true);
+  }
+
+  function finishClose() {
+    setExpanded(false);
+    setClosing(false);
+  }
+
+  // Backstop for a missed animationend event — same guard Select uses.
+  useEffect(() => {
+    if (!closing) return;
+    const timer = setTimeout(finishClose, 200);
+    return () => clearTimeout(timer);
+  }, [closing]);
+
   async function openDetail() {
+    setClosing(false);
     setExpanded(true);
     if (detail || loading) return;
     setLoading(true);
@@ -173,17 +193,22 @@ export function GameCard({ game, note, footer }: GameCardProps) {
       {expanded &&
         createPortal(
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 p-4 backdrop-blur-sm animate-fade-in"
-            onClick={() => setExpanded(false)}
+            onAnimationEnd={() => closing && finishClose()}
+            className={`fixed inset-0 z-50 flex items-center justify-center bg-bg/80 p-4 backdrop-blur-sm ${
+              closing ? "animate-[fade-in_150ms_ease_both_reverse]" : "animate-fade-in"
+            }`}
+            onClick={requestClose}
           >
           <div
             onClick={stop}
-            className="max-h-[85vh] w-full max-w-lg animate-fade-up overflow-y-auto rounded-2xl border border-border bg-surface p-6 shadow-2xl"
+            className={`max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-border bg-surface p-6 shadow-2xl ${
+              closing ? "animate-[fade-up_150ms_ease_both_reverse]" : "animate-fade-up"
+            }`}
           >
             <div className="flex items-start justify-between gap-3">
               <h2 className="page-title text-xl">{game.name}</h2>
               <button
-                onClick={() => setExpanded(false)}
+                onClick={requestClose}
                 className="shrink-0 rounded-full p-1 text-text-lo transition-colors hover:bg-surface-alt hover:text-text-hi"
               >
                 <X className="h-5 w-5" />

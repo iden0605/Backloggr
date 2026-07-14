@@ -29,13 +29,15 @@ export function OverlayToast() {
 
   if (!toast) return null;
 
+  // The terminal states get a one-beat pop (keyed on kind so saving → saved replays it) —
+  // a saved clip is the proudest moment in the app and deserves more than an icon swap.
   const icon =
     toast.kind === "saving" ? (
       <Loader2 className="h-5 w-5 shrink-0 animate-spin text-accent" />
     ) : toast.kind === "saved" ? (
-      <CircleCheck className="h-5 w-5 shrink-0 text-success" />
+      <CircleCheck key="saved" className="h-5 w-5 shrink-0 animate-pop-in text-success" />
     ) : (
-      <CircleX className="h-5 w-5 shrink-0 text-danger" />
+      <CircleX key="failed" className="h-5 w-5 shrink-0 animate-pop-in text-danger" />
     );
 
   return (

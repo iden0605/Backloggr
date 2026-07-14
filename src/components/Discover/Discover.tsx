@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { Search as SearchIcon, Loader2, SearchX, Sparkles, Compass } from "lucide-react";
 import { GameCard, type RawgGameResult } from "../shared/GameCard";
 import { EmptyState } from "../shared/EmptyState";
+import { DotBounce } from "../shared/DotBounce";
 import { AddToLibraryButton, useAddToLibrary, type ChatRecommendResponse } from "./common";
 import { useAppStore } from "../../store/useAppStore";
 
@@ -16,6 +17,7 @@ import { useAppStore } from "../../store/useAppStore";
  */
 export function Discover() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [query, setQuery] = useState("");
   // null = no active search (For You shows); [] = a search that found nothing.
   const [results, setResults] = useState<RawgGameResult[] | null>(null);
@@ -23,10 +25,9 @@ export function Discover() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { addedIds, addToLibrary, error: addError } = useAddToLibrary();
+  const autoSearchedRef = useRef(false);
 
-  async function runSearch(e: React.FormEvent) {
-    e.preventDefault();
-    const trimmed = query.trim();
+  async function searchFor(trimmed: string) {
     if (!trimmed || loading) return;
     setLoading(true);
     setError(null);
@@ -40,6 +41,23 @@ export function Discover() {
       setLoading(false);
     }
   }
+
+  function runSearch(e: React.FormEvent) {
+    e.preventDefault();
+    void searchFor(query.trim());
+  }
+
+  // Quick-open (Ctrl+K) hands off "not in your library" queries as router state — run the
+  // search once and clear the state so a remount/back can't rerun it.
+  useEffect(() => {
+    const state = location.state as { search?: string } | null;
+    if (!state?.search || autoSearchedRef.current) return;
+    autoSearchedRef.current = true;
+    navigate(location.pathname, { replace: true, state: null });
+    setQuery(state.search);
+    void searchFor(state.search);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function clearSearch() {
     setResults(null);
@@ -196,11 +214,7 @@ function ForYouSection({
   if (loading) {
     return (
       <div className="mt-12 flex items-center gap-2.5 text-sm text-text-lo">
-        <span className="flex gap-1">
-          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-accent [animation-delay:-0.3s]" />
-          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-accent [animation-delay:-0.15s]" />
-          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-accent" />
-        </span>
+        <DotBounce />
         Finding games based on your activity...
       </div>
     );

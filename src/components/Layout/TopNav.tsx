@@ -3,6 +3,7 @@ import { NavLink } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { check } from "@tauri-apps/plugin-updater";
+import { Search as SearchIcon } from "lucide-react";
 import { useAppStore } from "../../store/useAppStore";
 
 const navItems = [
@@ -109,19 +110,29 @@ export function TopNav({ solid }: { solid: boolean }) {
           ))}
         </nav>
 
-        {nowPlaying && (
-          <div className="ml-auto flex min-w-0 items-center gap-2.5">
-            <span className="h-1.5 w-1.5 shrink-0 animate-pulse-soft rounded-full bg-accent" />
-            <span className="truncate text-[12.5px] font-medium text-text-hi/90">
-              {nowPlaying.name}
-            </span>
-            {nowPlaying.alsoPlaying > 0 && (
-              <span className="shrink-0 text-[11px] text-text-lo">
-                +{nowPlaying.alsoPlaying} more
+        <div className="ml-auto flex min-w-0 items-center gap-4">
+          {nowPlaying && (
+            <div className="flex min-w-0 items-center gap-2.5">
+              <span className="h-1.5 w-1.5 shrink-0 animate-pulse-soft rounded-full bg-accent" />
+              <span className="truncate text-[12.5px] font-medium text-text-hi/90">
+                {nowPlaying.name}
               </span>
-            )}
-          </div>
-        )}
+              {nowPlaying.alsoPlaying > 0 && (
+                <span className="shrink-0 text-[11px] text-text-lo">
+                  +{nowPlaying.alsoPlaying} more
+                </span>
+              )}
+            </div>
+          )}
+          <button
+            onClick={() => useAppStore.getState().setQuickOpenVisible(true)}
+            title="Jump to a game (Ctrl+K)"
+            className="flex shrink-0 items-center gap-2 rounded-lg border border-border px-2.5 py-1.5 text-text-lo transition-all duration-150 hover:border-border-strong hover:text-text-hi active:scale-[0.97]"
+          >
+            <SearchIcon className="h-3.5 w-3.5" />
+            <span className="font-mono text-[10px] uppercase tracking-wide">Ctrl K</span>
+          </button>
+        </div>
       </div>
     </header>
   );

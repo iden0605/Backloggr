@@ -25,6 +25,9 @@ pub struct CurrentGame {
     /// once is normal (launcher-spawned games, two games mid-swap) — consumers show the most
     /// recently launched one plus a "+N more" so the display isn't silently lying.
     pub also_playing: i64,
+    /// Longest COMPLETED session for this game, in seconds (0 when none) — lets the
+    /// Dashboard's live timer mark a "Longest session yet" moment as it's crossed.
+    pub best_session_seconds: i64,
 }
 
 /// Opens a session at CURRENT_TIMESTAMP (started_at == last_seen_at, auto_tracked).
@@ -118,7 +121,9 @@ pub fn dangling(conn: &Connection) -> Result<Vec<Dangling>> {
 pub fn current_game(conn: &Connection) -> Result<Option<CurrentGame>> {
     conn.query_row(
         "SELECT g.id, g.name, g.cover_url, s.started_at,
-                (SELECT COUNT(*) - 1 FROM sessions WHERE ended_at IS NULL) AS also_playing
+                (SELECT COUNT(*) - 1 FROM sessions WHERE ended_at IS NULL) AS also_playing,
+                (SELECT COALESCE(MAX(duration_seconds), 0) FROM sessions
+                 WHERE game_id = g.id AND duration_seconds IS NOT NULL) AS best_session
          FROM sessions s JOIN games g ON g.id = s.game_id
          WHERE s.ended_at IS NULL
          ORDER BY s.started_at DESC LIMIT 1",
@@ -130,6 +135,7 @@ pub fn current_game(conn: &Connection) -> Result<Option<CurrentGame>> {
                 cover_url: row.get(2)?,
                 started_at: row.get(3)?,
                 also_playing: row.get::<_, i64>(4)?.max(0),
+                best_session_seconds: row.get(5)?,
             })
         },
     )
@@ -254,5 +260,30 @@ mod tests {
         let current = current_game(&conn).unwrap().unwrap();
         assert_eq!(current.name, "Second");
         assert_eq!(current.also_playing, 1);
+        // No completed sessions yet for the live game.
+        assert_eq!(current.best_session_seconds, 0);
+    }
+
+    #[test]
+    fn current_game_reports_best_completed_session_for_that_game() {
+        let conn = test_conn();
+        let game_id = insert_game(&conn, "Hades");
+        // Two closed sessions with known durations, then a live one.
+        for (start, end) in [
+            ("2026-01-01 10:00:00", "2026-01-01 10:30:00"),
+            ("2026-01-02 10:00:00", "2026-01-02 12:00:00"),
+        ] {
+            let (sid, _) = open(&conn, game_id).unwrap();
+            conn.execute(
+                "UPDATE sessions SET started_at = ?1, last_seen_at = ?2 WHERE id = ?3",
+                rusqlite::params![start, end, sid],
+            )
+            .unwrap();
+            close_estimated(&conn, sid).unwrap();
+        }
+        open(&conn, game_id).unwrap();
+
+        let current = current_game(&conn).unwrap().unwrap();
+        assert_eq!(current.best_session_seconds, 7200);
     }
 }

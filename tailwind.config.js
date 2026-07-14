@@ -38,11 +38,25 @@ export default {
           "0%, 100%": { opacity: "1" },
           "50%": { opacity: "0.35" },
         },
+        // One-shot celebratory beat (clip-saved check, milestone chips) — transform/opacity
+        // only, so it stays cheap on WebView2.
+        "pop-in": {
+          "0%": { opacity: "0", transform: "scale(0.5)" },
+          "60%": { transform: "scale(1.08)" },
+          "100%": { opacity: "1", transform: "scale(1)" },
+        },
+        // One-shot ring fade for "Shelby found this for you" cards — opacity only.
+        "glow-fade": {
+          "0%": { opacity: "1" },
+          "100%": { opacity: "0" },
+        },
       },
       animation: {
         "fade-up": "fade-up 0.5s cubic-bezier(0.16,1,0.3,1) both",
         "fade-in": "fade-in 0.4s ease both",
         "pulse-soft": "pulse-soft 2.4s ease-in-out infinite",
+        "pop-in": "pop-in 0.35s cubic-bezier(0.34,1.56,0.64,1) both",
+        "glow-fade": "glow-fade 1.8s ease-out both",
       },
     },
   },

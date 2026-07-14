@@ -61,6 +61,14 @@ interface AppState {
   // Every piece of copy that names the hotkey reads this instead of hardcoding Alt+F9.
   clipHotkey: string;
   setClipHotkey: (hotkey: string) => void;
+  // The global quick-open palette (Ctrl/⌘+K) — opened by the shortcut or TopNav's search
+  // button, rendered once by Shell so it works from every page.
+  quickOpenVisible: boolean;
+  setQuickOpenVisible: (visible: boolean) => void;
+  // One-line "first ever" unlock banner (first session / clip / completed game). Shell
+  // renders it app-wide; unlocks.ts sets it at most once per lifetime event.
+  unlockNotice: string | null;
+  setUnlockNotice: (notice: string | null) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -82,4 +90,8 @@ export const useAppStore = create<AppState>((set) => ({
   setUpdateAvailable: (version) => set({ updateAvailable: version }),
   clipHotkey: "Alt+F9",
   setClipHotkey: (hotkey) => set({ clipHotkey: hotkey }),
+  quickOpenVisible: false,
+  setQuickOpenVisible: (visible) => set({ quickOpenVisible: visible }),
+  unlockNotice: null,
+  setUnlockNotice: (notice) => set({ unlockNotice: notice }),
 }));

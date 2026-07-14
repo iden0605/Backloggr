@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -35,10 +35,25 @@ export function Clips() {
   const [clipSeconds, setClipSeconds] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [playing, setPlaying] = useState<Clip | null>(null);
+  // Clips that arrived while this page is open (vs. history on first load) enter the grid
+  // with an animation instead of just appearing.
+  const [freshIds, setFreshIds] = useState<Set<number>>(new Set());
+  const knownIds = useRef<Set<number> | null>(null);
 
   async function loadClips() {
     try {
-      setClips(await invoke<Clip[]>("get_clips"));
+      const loaded = await invoke<Clip[]>("get_clips");
+      if (knownIds.current === null) {
+        // First load is history, not an arrival — render it static.
+        knownIds.current = new Set(loaded.map((c) => c.id));
+      } else {
+        const fresh = loaded.filter((c) => !knownIds.current!.has(c.id));
+        if (fresh.length > 0) {
+          fresh.forEach((c) => knownIds.current!.add(c.id));
+          setFreshIds(new Set(fresh.map((c) => c.id)));
+        }
+      }
+      setClips(loaded);
     } catch (err) {
       setError(String(err));
     }
@@ -94,7 +109,9 @@ export function Clips() {
       ) : (
         <div className="mt-7 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
           {clips.map((clip) => (
-            <ClipCard key={clip.id} clip={clip} onPlay={() => setPlaying(clip)} onDelete={() => removeClip(clip.id)} />
+            <div key={clip.id} className={freshIds.has(clip.id) ? "animate-fade-up" : undefined}>
+              <ClipCard clip={clip} onPlay={() => setPlaying(clip)} onDelete={() => removeClip(clip.id)} />
+            </div>
           ))}
         </div>
       )}
