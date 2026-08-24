@@ -172,16 +172,19 @@ pub async fn search_games(query: &str) -> Result<Vec<RawgGameResult>, String> {
 /// Best single result for a title we believe is a real game name (a storefront folder name or a
 /// Steam library entry), preferring an exact case-insensitive name match over RAWG's relevance
 /// ordering rather than trusting it blindly — used by the tracker's auto-add and the Steam
-/// library import.
-pub async fn best_match(title: &str) -> Option<RawgGameResult> {
-    let results = search_games(title).await.ok()?;
+/// library import. `Err` is a genuine lookup failure (network/timeout/RAWG error status);
+/// `Ok(None)` is RAWG successfully returning zero results — callers that only care about the
+/// resolved game can collapse both with `.ok().flatten()`, callers that need to tell "RAWG is
+/// unreachable" apart from "RAWG has never heard of this" (the Steam import) should match on it.
+pub async fn best_match(title: &str) -> Result<Option<RawgGameResult>, String> {
+    let results = search_games(title).await?;
     let exact = results
         .iter()
         .position(|r| r.name.eq_ignore_ascii_case(title));
-    match exact {
+    Ok(match exact {
         Some(i) => results.into_iter().nth(i),
         None => results.into_iter().next(),
-    }
+    })
 }
 
 /// Best single match for a specific title, used to resolve a game name the AI named (as opposed

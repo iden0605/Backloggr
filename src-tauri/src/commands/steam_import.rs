@@ -106,6 +106,24 @@ pub struct SteamImportSummary {
     pub imported: usize,
     pub linked: usize,
     pub skipped: usize,
+    /// Games inserted with no cover/genre because their RAWG lookup actually failed (network,
+    /// timeout, API error) rather than RAWG genuinely having no match — see steam_import.log.
+    pub lookup_failed: usize,
+}
+
+/// Appends to `<appdata>/steam_import.log`, same rotate-at-256KB pattern as clipper's
+/// diagnostics — the only visibility into why an install's RAWG lookups are failing.
+fn log_diagnostic(app: &tauri::AppHandle, message: &str) {
+    use tauri::Manager;
+    let Ok(dir) = app.path().app_data_dir() else { return };
+    let path = dir.join("steam_import.log");
+    if path.metadata().map(|m| m.len() > 256 * 1024).unwrap_or(false) {
+        let _ = std::fs::remove_file(&path);
+    }
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "[{}] {message}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
+    }
 }
 
 /// Step two: imports the selected games as `backlog` entries, best-effort enriched via RAWG
@@ -124,7 +142,7 @@ pub async fn import_steam_games(
     const LOOKUP_CHUNK: usize = 8;
     let total = games.len();
     let mut done = 0usize;
-    let mut summary = SteamImportSummary { imported: 0, linked: 0, skipped: 0 };
+    let mut summary = SteamImportSummary { imported: 0, linked: 0, skipped: 0, lookup_failed: 0 };
 
     for chunk in games.chunks(LOOKUP_CHUNK) {
         let handles: Vec<_> = chunk
@@ -139,8 +157,15 @@ pub async fn import_steam_games(
             .collect();
         let mut resolved = Vec::new();
         for handle in handles {
-            if let Ok(pair) = handle.await {
-                resolved.push(pair);
+            if let Ok((pick, rawg_match)) = handle.await {
+                match rawg_match {
+                    Ok(m) => resolved.push((pick, m)),
+                    Err(e) => {
+                        log_diagnostic(&app, &format!("RAWG lookup failed for \"{}\": {e}", pick.name));
+                        summary.lookup_failed += 1;
+                        resolved.push((pick, None));
+                    }
+                }
             }
         }
 

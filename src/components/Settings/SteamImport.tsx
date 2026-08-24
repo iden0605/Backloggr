@@ -25,6 +25,7 @@ interface SteamImportSummary {
   imported: number;
   linked: number;
   skipped: number;
+  lookupFailed: number;
 }
 
 function formatPlaytime(minutes: number): string {
@@ -201,6 +202,13 @@ function SteamImportModal({
               {summary.skipped > 0 && `${summary.skipped} already imported. `}
               Covers and genres came from RAWG where a match was found.
             </p>
+            {summary.lookupFailed > 0 && (
+              <p className="text-xs text-warning">
+                {summary.lookupFailed} game{summary.lookupFailed === 1 ? "" : "s"} imported without
+                cover art — RAWG lookup failed (network or rate limit), not a real "no match".
+                Re-running the import will retry them.
+              </p>
+            )}
             <button
               onClick={onClose}
               className="mt-2 rounded-md bg-text-hi px-4 py-1.5 text-[13px] font-medium text-bg transition-all duration-150 hover:opacity-85 active:scale-[0.98]"

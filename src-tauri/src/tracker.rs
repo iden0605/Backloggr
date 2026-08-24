@@ -234,7 +234,7 @@ async fn auto_register_and_track(
         search_query.clone()
     };
 
-    let rawg_match = rawg::best_match(&search_query).await;
+    let rawg_match = rawg::best_match(&search_query).await.ok().flatten();
 
     let db = app.state::<DbState>();
     let conn = match db.0.lock() {
